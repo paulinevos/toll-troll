@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v php >/dev/null || ! php -r 'exit(PHP_VERSION_ID >= 80300 && extension_loaded("mbstring") && extension_loaded("dom") && extension_loaded("pdo_sqlite") && extension_loaded("curl") && extension_loaded("zip") ? 0 : 1);'; then
+    if [ ! -f /etc/apt/sources.list.d/php.list ]; then
+        keyring=$(mktemp --suffix=.deb)
+        curl -fsSL https://packages.sury.org/debsuryorg-archive-keyring.deb -o "$keyring"
+        sudo dpkg -i "$keyring"
+        rm "$keyring"
+        . /etc/os-release
+        echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/php.list >/dev/null
+    fi
+    sudo apt-get update -qq
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php8.3-cli php8.3-mbstring php8.3-xml php8.3-sqlite3 php8.3-curl php8.3-zip
+fi
+
+if ! command -v composer >/dev/null; then
+    installer=$(mktemp)
+    curl -fsSL https://getcomposer.org/installer -o "$installer"
+    expected=$(curl -fsSL https://composer.github.io/installer.sig)
+    actual=$(sha384sum "$installer" | cut -d ' ' -f 1)
+    [ "$actual" = "$expected" ] || { rm "$installer"; echo 'Composer installer checksum mismatch' >&2; exit 1; }
+    sudo php "$installer" --install-dir=/usr/local/bin --filename=composer --quiet
+    rm "$installer"
+fi
+
+composer install --no-interaction --prefer-dist
