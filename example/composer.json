@@ -1,0 +1,18 @@
+{
+    "name": "vos/toll-troll-demo",
+    "description": "Local-only TollTroll annotation demo with synthetic data and no live inference.",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "laravel/framework": "^12.0|^13.0",
+        "vos/toll-troll": "dev-main"
+    },
+    "repositories": [
+        { "type": "path", "url": "..", "options": { "symlink": true, "versions": { "vos/toll-troll": "dev-main" } } }
+    ],
+    "autoload": {
+        "psr-4": { "Demo\\": "app/", "Database\\Seeders\\": "database/seeders/" }
+    },
+    "config": { "sort-packages": true }
+}

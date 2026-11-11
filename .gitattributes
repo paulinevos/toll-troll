@@ -1,0 +1,12 @@
+/.agents export-ignore
+/.amp export-ignore
+/.github export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/example export-ignore
+/tests export-ignore
+/phpunit.xml export-ignore
+/composer.lock export-ignore
+
+# Keep docs, copyable examples, migrations, views, fonts/licenses, and Boost
+# guidelines: the package README links to them or the runtime consumes them.

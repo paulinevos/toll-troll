@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="title desc">
+  <title id="title">TollTroll icon</title>
+  <desc id="desc">A moss-green troll with pointed ears, two round eyes, an oval nose, and a bridge arch cutout.</desc>
+  <path fill="#657a3c" d="M9 105V90C9 79 10 71 13 64C8 59 4 49 2 39C8 37 15 38 23 41C35 25 48 19 64 19C80 19 93 25 105 41C113 38 120 37 126 39C124 49 120 59 115 64C118 71 119 79 119 90V105H90C88 105 87 104 86 102C81 91 73 84 64 84C55 84 47 91 42 102C41 104 40 105 38 105Z"/>
+  <g fill="#252422">
+    <circle cx="41" cy="55" r="5.3"/>
+    <circle cx="87" cy="55" r="5.3"/>
+    <path d="M50 69C50 62 56 55 64 55C72 55 78 62 78 69C78 73 73 74.5 64 74.5C55 74.5 50 73 50 69Z"/>
+  </g>
+</svg>

@@ -1,0 +1,44 @@
+{
+    "name": "vos/toll-troll",
+    "description": "A Laravel policy gate for agent workflows, with optional paraphrasing and reproducible policy benchmarks.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "illuminate/bus": "^12.0|^13.0",
+        "illuminate/console": "^12.0|^13.0",
+        "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/events": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/validation": "^12.0|^13.0",
+        "laravel/ai": "^1.3"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.26",
+        "orchestra/testbench": "^10.6|^11.0",
+        "phpunit/phpunit": "^11.5"
+    },
+    "suggest": {
+        "illuminate/database": "Laravel 12/13 database support for the opt-in annotation module.",
+        "illuminate/encryption": "Laravel 12/13 encryption support for private annotation snapshots.",
+        "illuminate/routing": "Laravel 12/13 routing support for the opt-in annotation UI.",
+        "illuminate/view": "Laravel 12/13 Blade support for the opt-in annotation UI."
+    },
+    "autoload": {
+        "psr-4": { "Vos\\TollTroll\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "Vos\\TollTroll\\Tests\\": "tests/" }
+    },
+    "extra": {
+        "laravel": {
+            "providers": ["Vos\\TollTroll\\TollTrollServiceProvider"]
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "format": "pint",
+        "check": ["@composer validate --strict", "pint --test", "@test"]
+    },
+    "config": { "sort-packages": true }
+}

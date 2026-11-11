@@ -1,0 +1,7 @@
+/vendor/
+/composer.lock
+/.phpunit.cache/
+/.amp/*
+!/.amp/services.yaml
+/.agents/skills/
+/skills-lock.json

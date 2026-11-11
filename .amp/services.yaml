@@ -1,0 +1,8 @@
+services:
+  toll-troll-demo:
+    command: APP_URL="$PUBLIC_URL" php example/artisan serve --host=0.0.0.0 --port="$PORT"
+    port: 8000
+    health: /toll-troll/annotations
+    portal:
+      title: TollTroll annotation demo
+      description: Synthetic annotations and fixture advice. No API keys or sign-in needed; local development only.
