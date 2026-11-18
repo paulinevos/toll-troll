@@ -4,7 +4,7 @@ These files run inside a bootstrapped Laravel application; they are not standalo
 
 ## 🧌 Troll Patrol
 
-Let the troll make its calls while humans check its work. `troll-patrol.php` evaluates your policy branches, then captures the **performed predictions** for annotation without dispatching actions. First enable the [annotation provider, migrations, and dataset Gate](../docs/annotations.md).
+Let the troll make its calls while humans check its work. `troll-patrol.php` defines a Bridge for the named entrypoint, evaluates your policy branches, then captures the **performed predictions** for annotation without dispatching actions. First enable the [annotation provider, migrations, and per-bridge Gate](../docs/annotations.md). Its first argument is the stable bridge name; use different names for different entrypoints, even with identical policies. Reviewers can switch between their authorized bridges in the dashboard.
 
 ```php
 use Vos\TollTroll\Policy;

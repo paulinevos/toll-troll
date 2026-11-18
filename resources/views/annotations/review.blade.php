@@ -11,30 +11,30 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header>
     <div class="header-inner">
-        <a class="brand" href="{{ route('toll-troll-annotations.index') }}" aria-label="TollTroll annotation sets"><img src="{{ $iconDataUri }}" alt="" width="44" height="44"><span>TollTroll</span></a>
+        <a class="brand" href="{{ route('toll-troll-annotations.index') }}" aria-label="TollTroll bridges"><img src="{{ $iconDataUri }}" alt="" width="44" height="44"><span>TollTroll</span></a>
         <span class="header-section">Annotations</span>
-        @isset($dataset)<a class="back-link" href="{{ route('toll-troll-annotations.index') }}">All datasets <span aria-hidden="true">↗</span></a>@endisset
+        @isset($dataset)<a class="back-link" href="{{ route('toll-troll-annotations.index') }}">All bridges <span aria-hidden="true">↗</span></a>@endisset
     </div>
 </header>
 <main id="main" tabindex="-1">
-    @if(isset($datasets))
+    @if(!isset($dataset))
         <div class="intro">
-            <div><span class="eyebrow">Ground truth</span><h1>Annotation sets</h1><p class="muted">Select a dataset to review its cases.</p></div>
-            <span class="tag">{{ $datasets->count() }} {{ \Illuminate\Support\Str::plural('dataset', $datasets->count()) }}</span>
+            <div><span class="eyebrow">Ground truth</span><h1>Bridges</h1><p class="muted">Each input entrypoint has its own bridge. Select one to review its cases.</p></div>
+            <span class="tag">{{ $bridges->count() }} {{ \Illuminate\Support\Str::plural('bridge', $bridges->count()) }}</span>
         </div>
         @include('toll-troll-annotations::advice')
-        <div class="dataset-list">
-            @forelse($datasets as $name)
-                <a class="panel dataset-card" href="{{ route('toll-troll-annotations.show', $name) }}">
-                    <span class="eyebrow">Dataset</span><h2>{{ $name }}</h2><span class="dataset-action">Open review queue <span aria-hidden="true">→</span></span>
+        <div class="bridge-list">
+            @forelse($bridges as $name)
+                <a class="panel bridge-card" href="{{ route('toll-troll-annotations.show', $name) }}">
+                    <span class="eyebrow">Bridge</span><h2>{{ $name }}</h2><span class="bridge-action">Open review queue <span aria-hidden="true">→</span></span>
                 </a>
             @empty
-                <div class="panel empty"><span class="empty-mark" aria-hidden="true">＋</span><h2>No annotation sets available</h2><p class="muted">Dispatch an <code>AnnotationRequested</code> event and authorize this reviewer for its dataset.</p></div>
+                <div class="panel empty"><span class="empty-mark" aria-hidden="true">＋</span><h2>No bridges available</h2><p class="muted">Capture annotations for a bridge and authorize this reviewer for its name.</p></div>
             @endforelse
         </div>
     @else
         <div class="intro">
-            <div><span class="eyebrow">Dataset</span><h1>{{ $dataset }}</h1></div>
+            <div><span class="eyebrow">Bridge</span><h1>{{ $dataset }}</h1></div>
             <div class="counts"><span class="tag pending">{{ $pending }} pending</span><span class="muted small">{{ $cases->total() }} total cases</span></div>
         </div>
         @if(session('status'))<div class="notice" role="status">{{ session('status') }}</div>@endif
@@ -42,6 +42,14 @@
         @include('toll-troll-annotations::advice')
         <div class="layout">
             <aside>
+                <details class="bridge-switcher">
+                    <summary>Switch bridge</summary>
+                    <nav aria-label="Bridges">
+                        @foreach($bridges as $name)
+                            <a href="{{ route('toll-troll-annotations.show', $name) }}" @if($name === $dataset) aria-current="true" @endif>{{ $name }}</a>
+                        @endforeach
+                    </nav>
+                </details>
                 <h2 class="eyebrow queue-heading">Review queue</h2>
                 <nav class="queue" aria-label="Annotation cases">
                     @foreach($cases as $case)

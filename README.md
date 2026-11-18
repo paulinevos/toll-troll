@@ -26,24 +26,19 @@ Laravel discovers the service provider automatically. Configure your inference p
 
 ## 🧌 Basic usage
 
-Give TollTroll the target agent's trusted instructions, the context to classify, and a sequence of policies for each branch:
+Define a **Bridge** for each input entrypoint: its trusted target instructions, policy branches, guards, and optional evaluation configuration. Send incoming source text across that bridge:
 
 ```php
-use Vos\TollTroll\Context;
+use Vos\TollTroll\Bridge;
 use Vos\TollTroll\Evaluation;
 use Vos\TollTroll\Policy;
 use Vos\TollTroll\TollTroll;
 
 $tollTroll = app(TollTroll::class);
 
-$result = $tollTroll->evaluate(
-    new Context(
-        instructions: (string) $implementationAgent->instructions(), // Trusted application configuration.
-        sources: [
-            'support-conversation' => $transcript,
-            'application-log' => $log,
-        ],
-    ),
+$bridge = new Bridge(
+    name: 'support-webhook',
+    instructions: (string) $implementationAgent->instructions(), // Trusted application configuration.
     branches: [
         'bug' => [
             Policy::bugReport(),
@@ -54,6 +49,11 @@ $result = $tollTroll->evaluate(
     ],
 );
 
+$result = $tollTroll->cross($bridge, [
+    'support-conversation' => $transcript,
+    'application-log' => $log,
+]);
+
 $tollTroll->dispatch($result, [
     'bug' => fn (Evaluation $evaluation) => new StartFixAgent($evaluation),
     'feature' => fn (Evaluation $evaluation) => new NotifyProductTeam($evaluation),
@@ -62,12 +62,17 @@ $tollTroll->dispatch($result, [
 
 The injection guard runs before branch policies by default. Each branch advances only when its current policy passes; independent branches can both qualify. `dispatch()` queues only the jobs mapped to allowed branches. The jobs above belong to your application and must implement Laravel's `ShouldQueue`.
 
-Call `$result->allows('bug')` to check the guard and branch together, or `$result->needsReview()` to check for failed guards or uncertain/errored decisions. `evaluate()` itself never dispatches jobs or review events. Inference is synchronous; run it inside an application job for background processing.
+Call `$result->allows('bug')` to check the guard and branch together, or `$result->needsReview()` to check for failed guards or uncertain/errored decisions. `cross()` itself never dispatches jobs or review events. Inference is synchronous; run it inside an application job for background processing.
+
+Give different entrypoints different bridge names, even when every rule is identical: `support-webhook` and `feedback-form` keep separate annotation queues, labels, and exports. Reuse a bridge definition for successive inputs at the same entrypoint. Names are stable application-owned identifiers (1–64 letters, digits, underscores, or hyphens), never derived from policy hashes or untrusted input. The evaluation retains the name as `$result->bridge`.
+
+Pass `guards:` and `config: new EvaluationConfig(...)` on `Bridge` to customize its rules. Existing `evaluate($context, $branches, guards: ..., config: ...)` calls remain supported as unnamed evaluations; use `cross()` for entrypoint identity. Existing annotation datasets appear as bridges without a database migration. See [annotations](docs/annotations.md) for capture and switching.
 
 ## 🧌 Features
 
 | Feature | What it gives you |
 | --- | --- |
+| Named bridges | Define a gate per input entrypoint and review its evaluations independently, even when entrypoints share policies. |
 | Layered policies | Check conditions in order, such as bug report → expected/actual behavior → reproduction steps. Stop a branch when a prerequisite does not pass. |
 | Custom policies and guards | Describe your own acceptance criteria. Add mandatory guards before independent business branches. |
 | [Domain references](#-domain-references) | Give the classifier documentation, code, or retrieved knowledge relevant to a policy, separately from the report being judged. |
@@ -158,9 +163,9 @@ Reports include incorrect passes, withheld passes, confusion tables, latency, an
 
 ### Human annotation
 
-Dispatch `EvaluationReviewRequested` with a completed evaluation to review the predictions actually made for every guard and branch policy. The dashboard keeps model scores/verdicts separate from human expected labels and shows where they agree or disagree. Use `AnnotationRequested` instead for blind labeling without predictions. Both support separate datasets, keyboard shortcuts, review history, JSONL exports, and optional retention/account cleanup.
+Dispatch `EvaluationReviewRequested` with a bridge and completed evaluation to review the predictions actually made for every guard and branch policy. The dashboard keeps model scores/verdicts separate from human expected labels and shows where they agree or disagree. Use `AnnotationRequested` instead for blind labeling without predictions. Both keep annotations separate per bridge, with a bridge switcher, keyboard shortcuts, review history, JSONL exports, and optional retention/account cleanup.
 
-Everything ships in the same Composer package. No annotation routes, listeners, or migrations load with the default provider. Register `AnnotationServiceProvider`, publish its migrations, and define dataset authorization to enable it. See [annotations](docs/annotations.md) for setup, capture, access control, and retention.
+Everything ships in the same Composer package. No annotation routes, listeners, or migrations load with the default provider. Register `AnnotationServiceProvider`, publish its migrations, and define per-bridge authorization to enable it. See [annotations](docs/annotations.md) for setup, capture, access control, and retention.
 
 Try [Troll Patrol](examples/README.md#-troll-patrol) to review live predictions without actions, or [The Two-Bridge Test](examples/README.md#-the-two-bridge-test) to pass an investigation job's results through a fresh policy gate before starting a fix.
 
@@ -276,8 +281,8 @@ After enabling annotations, publish their separate configuration with `php artis
 | Key in `config/toll-troll-annotations.php` | Default | What it does |
 | --- | --- | --- |
 | `path` | `'toll-troll/annotations'` | URL prefix for the annotation dashboard and its review/export routes. |
-| `middleware` | `['web']` | Route middleware. Preserve sessions and CSRF protection; add application authentication middleware as needed. Authenticated-user and per-dataset Gate checks are always required as well. |
-| `retention_days` | `null` | Optional capture-age limit across all datasets, pending or reviewed. Null disables pruning; a positive PHP integer enables selection by Laravel's `model:prune`. Your application must explicitly schedule it. |
+| `middleware` | `['web']` | Route middleware. Preserve sessions and CSRF protection; add application authentication middleware as needed. Authenticated-user and per-bridge Gate checks are always required as well. |
+| `retention_days` | `null` | Optional capture-age limit across all bridges, pending or reviewed. Null disables pruning; a positive PHP integer enables selection by Laravel's `model:prune`. Your application must explicitly schedule it. |
 | `analysis.enabled` | `false` | Opt-in, command-driven advice on recurring prediction/label gaps. Uses the first classifier's provider/model unless overridden with `analysis.provider` / `analysis.model`. |
 | `analysis.min_reviewed` / `analysis.min_disagreements` / `analysis.min_disagreement_rate` | `30` / `5` / `0.1` | Minimum distinct reviewed contexts and disagreement signal per exact policy revision. Heuristics, not statistical guarantees. |
 | `analysis.max_cases` | `100` | Most recently reviewed distinct comparable contexts sent per policy revision. |

@@ -133,11 +133,16 @@
     .empty p { margin: 12px auto 0; max-width: 360px; }
     .empty-mark { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-muted); font-size: 24px; margin-bottom: 20px; }
     .page-links { display: flex; justify-content: space-between; gap: 16px; margin: 16px 12px; font-size: 12px; }
-    .dataset-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px; }
-    .dataset-card { display: block; text-decoration: none; color: var(--color-foreground); }
-    .dataset-card h2 { margin: 12px 0 32px; }
-    .dataset-card:hover { border-color: var(--color-primary); }
-    .dataset-action { display: flex; justify-content: space-between; color: var(--color-primary); font-size: 12px; }
+    .bridge-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 20px; }
+    .bridge-card { display: block; text-decoration: none; color: var(--color-foreground); }
+    .bridge-card h2 { margin: 12px 0 32px; }
+    .bridge-card:hover { border-color: var(--color-primary); }
+    .bridge-action { display: flex; justify-content: space-between; color: var(--color-primary); font-size: 12px; }
+    .bridge-switcher { margin: 0 4px 24px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+    .bridge-switcher summary { padding: 12px; font-size: 14px; }
+    .bridge-switcher nav { display: grid; max-height: 224px; overflow: auto; padding: 4px; border-top: 1px solid var(--color-border); }
+    .bridge-switcher a { padding: 10px 8px; overflow-wrap: anywhere; border-radius: var(--radius-sm); text-decoration: none; }
+    .bridge-switcher a:hover, .bridge-switcher a[aria-current] { background: var(--color-accent); }
     .case-navigation { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; font-size: 13px; }
     .case-navigation a { text-decoration: none; }
     kbd { display: inline-block; border: 1px solid var(--color-border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; font: 11px/1.5 var(--font-body); color: var(--color-muted); background: var(--color-background); white-space: nowrap; }

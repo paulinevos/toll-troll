@@ -19,6 +19,7 @@ final readonly class Evaluation
         public array $guards,
         public array $branches,
         public array $errors = [],
+        public ?string $bridge = null,
     ) {}
 
     public function guarded(): bool

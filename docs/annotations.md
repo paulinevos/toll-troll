@@ -2,6 +2,12 @@
 
 Annotations ship in **the same `vos/toll-troll` package**. Composer has no feature flags that selectively install code. Only `TollTrollServiceProvider` is auto-discovered; annotations remain inactive unless you explicitly register their provider. No annotation tables are created automatically, and ordinary evaluations never store annotation data.
 
+## Bridges and entrypoints
+
+A **Bridge** names the context instructions, policy branches, guards, and evaluation configuration for one input entrypoint. Different entrypoints must use different names even if their rules are identical. The dashboard lists bridges and offers **Switch bridge** in each review queue. Only bridges with captured cases that the reviewer may access appear; queues, labels, navigation, and exports stay separate.
+
+The existing `dataset` column, event parameter/property, route parameter, and Gate ability remain unchanged for compatibility: their value is the **bridge name**. Both capture events accept a `Bridge` object or its name in that parameter. Existing datasets become bridges as-is, preserving URLs, fingerprints, labels, and history; this conceptual change needs no migration. If you previously mixed entrypoints in one dataset, their origins cannot be inferred: use distinct bridge names for future captures and handle any historical split in application-owned data.
+
 ## Enable in a Laravel application
 
 Add this provider to `bootstrap/providers.php`:
@@ -17,7 +23,7 @@ php artisan vendor:publish --tag=toll-troll-annotations-migrations
 php artisan migrate
 ```
 
-Optional configuration: `php artisan vendor:publish --tag=toll-troll-annotations-config`. The default path is `/toll-troll/annotations`. Preserve the `web` middleware for sessions and CSRF protection; add your application's authentication middleware if you want login redirects. The controller independently requires an authenticated user and per-dataset authorization. There is **no permissive default gate**.
+Optional configuration: `php artisan vendor:publish --tag=toll-troll-annotations-config`. The default path is `/toll-troll/annotations`. Preserve the `web` middleware for sessions and CSRF protection; add your application's authentication middleware if you want login redirects. The controller independently requires an authenticated user and per-bridge authorization. There is **no permissive default gate**.
 
 Define this ability in your application provider, using your own access rule:
 
@@ -29,7 +35,7 @@ Gate::define('review-toll-troll-annotations', function ($user, string $dataset):
 });
 ```
 
-The same ability controls viewing, labeling, and export. Index pages list only authorized datasets; every case lookup is scoped to its dataset. For multiple tenants, choose distinct dataset names and authorize membership; this package does not infer tenancy.
+The same ability controls viewing, labeling, and export. Index pages and the switcher list only authorized bridge names; every case lookup is scoped to its bridge. For multiple tenants, choose distinct names per tenant and entrypoint and authorize membership; this package does not infer tenancy. Existing application permission methods such as `canReviewAnnotationDataset()` can stay unchanged.
 
 ## Submit deliberate snapshots
 
@@ -42,14 +48,14 @@ use Vos\TollTroll\Context;
 use Vos\TollTroll\Policy;
 
 Event::dispatch(new AnnotationRequested(
-    dataset: 'support-reproduction',
+    dataset: 'support-webhook', // Bridge name; the parameter keeps its legacy name.
     key: 'ticket-42', // Stable application key, not a credential or personal identifier.
     context: new Context($trustedTargetInstructions, ['conversation' => $redactedTranscript]),
     policy: Policy::reproductionSteps(),
 ));
 ```
 
-The listener is synchronous and stores no model prediction. It performs no inference, starts no agent, and queues no work. The exact same dataset/key/context/policy submission is idempotent; repeating it never resets an existing human label. Changed context or policy creates a fresh pending snapshot. Dataset names accept 1–64 letters, digits, underscores, or hyphens.
+The listener is synchronous and stores no model prediction. It performs no inference, starts no agent, and queues no work. The exact same bridge/key/context/policy submission is idempotent; repeating it never resets an existing human label. Changed context or policy creates a fresh pending snapshot. Identical submissions to different bridges remain separate. Bridge names accept 1–64 letters, digits, underscores, or hyphens.
 
 Capture after your application's transaction commits if a rollback should cancel the submission. Handle listener/database failures according to your application's delivery needs; there is no hidden queue or retry policy. The package does not subscribe to all evaluations or production conversations automatically.
 
@@ -60,16 +66,21 @@ Use `EvaluationReviewRequested` when you want human labels tied to predictions t
 ```php
 use Illuminate\Support\Facades\Event;
 use Vos\TollTroll\Annotations\EvaluationReviewRequested;
+use Vos\TollTroll\Bridge;
+use Vos\TollTroll\Policy;
 use Vos\TollTroll\TollTroll;
 
-$evaluation = app(TollTroll::class)->evaluate($context, $branches);
-Event::dispatch(new EvaluationReviewRequested('troll-patrol', $ticketKey, $evaluation));
+$bridge = new Bridge('support-webhook', $trustedTargetInstructions, [
+    'bug' => [Policy::bugReport(), Policy::reproductionSteps()],
+]);
+$evaluation = app(TollTroll::class)->cross($bridge, ['conversation' => $redactedTranscript]);
+Event::dispatch(new EvaluationReviewRequested($bridge, $ticketKey, $evaluation));
 // Deliberately omit TollTroll::dispatch() while observing predictions without actions.
 ```
 
-Capture writes one case per guard/branch policy in one database transaction. Each retains the exact context, policy, evaluation ID, branch, aggregate verdict, individual scores/reasons/evidence, provider/model metadata, paraphrases, and evaluation errors. Predictions are encrypted at rest. The listener makes no new inference calls and dispatches no work or review notifications; the preceding `evaluate()` does incur inference costs. Redact data **before** evaluating so the retained context matches what was judged.
+Capture writes one case per guard/branch policy in one database transaction. Each retains the exact context, policy, evaluation ID, branch, aggregate verdict, individual scores/reasons/evidence, provider/model metadata, paraphrases, and evaluation errors, scoped to the bridge name. A named evaluation cannot be submitted under another bridge. Predictions are encrypted at rest. The listener makes no new inference calls and dispatches no work or review notifications; the preceding `cross()` does incur inference costs. Redact data **before** evaluating so the retained context matches what was judged. Legacy unnamed evaluations still accept an explicit bridge name at capture time.
 
-Re-dispatching the same dataset/key/evaluation is idempotent and preserves labels. A fresh evaluation ID creates new cases, even with identical input and predictions. The queue identifies the policy, branch, and run; guards use a null branch. Keep the stable application key for account cleanup. Capture passing and blocked runs alike so reviewers can find both false passes and false failures.
+Re-dispatching the same bridge/key/evaluation is idempotent and preserves labels. A fresh evaluation ID creates new cases, even with identical input and predictions. The queue identifies the policy, branch, and run; guards use a null branch. Keep the stable application key for account cleanup. Capture passing and blocked runs alike so reviewers can find both false passes and false failures.
 
 The reviewer selects the **expected policy outcome**, not a yes/no correctness flag. If a predicted fail was correct, label it `fail`; if it should have passed, label it `pass`. The dashboard compares the saved label with the recorded prediction. It never preselects the model's answer or replaces the prediction with the human label. `unknown` is a classification that can agree or disagree; `error` and `skipped` have no comparable prediction, but reviewers can still label the context. Skipped policies are not run retroactively.
 
@@ -83,7 +94,7 @@ The route shows the frozen policy wording, trusted target instructions, escaped 
 
 Every save records the reviewer identifier and an append-only revision. Stale forms receive HTTP 409 rather than overwriting another review. Label changes never authorize an agent action. The UI shows the latest label; the `toll_troll_annotation_reviews` table retains history for application audits.
 
-Reviewed cases export as JSONL compatible with [the benchmark command](benchmarking.md), one dataset and exact policy snapshot at a time. Pending cases are excluded; unknown labels are included. The benchmark refuses exported policy wording or references that differ from its suite. Keep development and held-out annotation sets separate to avoid tuning and evaluating on the same records.
+Reviewed cases export as JSONL compatible with [the benchmark command](benchmarking.md), one bridge and exact policy snapshot at a time. Each row includes its `bridge` name so provenance survives downloading. Pending cases are excluded; unknown labels are included. The benchmark refuses exported policy wording or references that differ from its suite. Keep development and held-out annotation sets separate to avoid tuning and evaluating on the same records.
 
 For prediction-linked cases, `expected` is the human label and `prediction` contains the untouched run snapshot. Compare `expected` with `prediction.verdict` to audit those historical decisions without inference. Benchmark collection ignores the old prediction when making fresh judgments; these exports are not benchmark `--replay` captures. Repeated runs can produce multiple cases for the same source, so deduplicate or group by source before splitting training/tuning and held-out sets. The UI comparison is per policy, not a separate human approval of an entire branch or its actions.
 
@@ -151,7 +162,7 @@ Letter shortcuts ignore text inputs, editable content, modifier combinations, he
 
 ## Privacy and retention
 
-Context, policy snapshots, predictions, and notes are encrypted at rest with Laravel's application key. Dataset names, application keys, labels, timestamps, and reviewer IDs are plaintext; keep secrets and personal details out of identifying fields. Rendered pages and downloads use no-store headers. Exported JSONL is plaintext and must stay private.
+Context, policy snapshots, predictions, and notes are encrypted at rest with Laravel's application key. Bridge names, application keys, labels, timestamps, and reviewer IDs are plaintext; keep secrets and personal details out of identifying fields. Rendered pages and downloads use no-store headers. Exported JSONL is plaintext and must stay private.
 
 Your application owns consent, redaction, retention, deletion, backup protection, and key rotation. Do not rotate away an encryption key without retaining the ability to decrypt required data. Disabling the provider removes routes and capture listeners but does not delete stored records.
 
@@ -163,7 +174,7 @@ Your application owns consent, redaction, retention, deletion, backup protection
 'retention_days' => 30, // null disables pruning; zero is not valid.
 ```
 
-This selects snapshots in **all datasets**, pending or reviewed, whose `created_at` is at or before `now()->subDays(30)`. Reviewing a case does not extend its lifetime. Invalid values throw before deletion; use an integer, not a numeric string from an uncast environment variable.
+This selects snapshots in **all bridges**, pending or reviewed, whose `created_at` is at or before `now()->subDays(30)`. Reviewing a case does not extend its lifetime. Invalid values throw before deletion; use an integer, not a numeric string from an uncast environment variable.
 
 Preview the affected count before enabling deletion:
 
@@ -180,20 +191,20 @@ use Vos\TollTroll\Annotations\Annotation;
 Schedule::command('model:prune', ['--model' => [Annotation::class]])->daily();
 ```
 
-Pass `--model` explicitly: Laravel's default discovery scans application models, not this package. Deletion is permanent and bulk-based; it does not decrypt snapshots or fire individual `pruning`, `deleting`, or `deleted` hooks. The database cascades deletion to review history; keep foreign key enforcement enabled, including SQLite's `foreign_key_constraints` setting. For per-dataset retention or other criteria, use an application-owned cleanup job with an appropriately scoped Eloquent query instead of this global retention setting.
+Pass `--model` explicitly: Laravel's default discovery scans application models, not this package. Deletion is permanent and bulk-based; it does not decrypt snapshots or fire individual `pruning`, `deleting`, or `deleted` hooks. The database cascades deletion to review history; keep foreign key enforcement enabled, including SQLite's `foreign_key_constraints` setting. For per-bridge retention or other criteria, use an application-owned cleanup job with an appropriately scoped Eloquent query instead of this global retention setting.
 
 ### Account deletion
 
-TollTroll has no account ownership model. Keep an application-owned mapping from each account to its annotation datasets and sample keys, then delete all matching snapshots when destroying that account:
+TollTroll has no account ownership model. Keep an application-owned mapping from each account to its bridge names and sample keys, then delete all matching snapshots when destroying that account:
 
 ```php
 use Vos\TollTroll\Annotations\Annotation;
 
-Annotation::where('dataset', $dataset)
+Annotation::where('dataset', $bridgeName)
     ->whereIn('sample_key', $annotationKeysForAccount)
     ->delete();
 ```
 
-Resolve the keys before deleting the application's ownership records; run this for each relevant dataset. It removes every matching context/policy revision and cascades its review history without touching other keys or datasets. `reviewer_id` identifies the person who labeled a case, **not** the account that owns its source data. Do not use it as the ownership filter.
+Resolve the keys before deleting the application's ownership records; run this for each relevant bridge. It removes every matching context/policy revision and cascades its review history without touching other keys or bridges. `reviewer_id` identifies the person who labeled a case, **not** the account that owns its source data. Do not use it as the ownership filter.
 
 Deleted snapshots can be recreated by another `AnnotationRequested` event. Stop capture for destroyed accounts and account for queued application work that could dispatch it again. Neither pruning nor account cleanup removes previously downloaded exports, benchmark reports, or backups; cover those in your application's retention process. This is not a claim of regulatory compliance.

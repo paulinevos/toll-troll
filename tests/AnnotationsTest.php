@@ -21,8 +21,10 @@ use Vos\TollTroll\Annotations\AnnotationRequested;
 use Vos\TollTroll\Annotations\AnnotationServiceProvider;
 use Vos\TollTroll\Annotations\EvaluationReviewRequested;
 use Vos\TollTroll\Annotations\PolicyDeployed;
+use Vos\TollTroll\Bridge;
 use Vos\TollTroll\Context;
 use Vos\TollTroll\Evaluation;
+use Vos\TollTroll\EvaluationConfig;
 use Vos\TollTroll\Events\ReviewRequired;
 use Vos\TollTroll\Policy;
 use Vos\TollTroll\Tests\Fixtures\DomainPolicy;
@@ -48,6 +50,59 @@ class AnnotationsTest extends TestCase
         parent::setUp();
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         Http::preventStrayRequests();
+    }
+
+    public function test_identical_entrypoint_rules_have_separate_bridge_labels_exports_and_authorized_switching(): void
+    {
+        $policy = Policy::bugReport();
+        $context = new Context('Triage.', ['report' => 'Save fails.']);
+        foreach (['support-webhook', 'feedback-form', 'private-entrypoint'] as $name) {
+            $bridge = new Bridge($name, $context->instructions, ['bug' => [$policy]]);
+            $event = new AnnotationRequested($bridge, 'ticket-42', $context, $policy);
+            Event::dispatch($event);
+            Event::dispatch($event);
+        }
+        $this->assertSame(3, Annotation::count());
+        $support = Annotation::where('dataset', 'support-webhook')->sole();
+        $feedback = Annotation::where('dataset', 'feedback-form')->sole();
+        $this->assertSame($support->policy_hash, $feedback->policy_hash);
+        $this->actingAs(new GenericUser(['id' => 7]));
+        Gate::define('review-toll-troll-annotations', fn ($user, $name) => $name !== 'private-entrypoint');
+        $base = '/toll-troll/annotations';
+        $this->get($base)->assertOk()->assertSee('Bridges')->assertSee('support-webhook')->assertSee('feedback-form')->assertDontSee('private-entrypoint');
+        $page = $this->get($base.'/support-webhook')->assertOk()->assertSee('Switch bridge')->assertDontSee('private-entrypoint');
+        $this->assertStringContainsString('href="'.route('toll-troll-annotations.show', 'feedback-form').'"', $page->getContent());
+        $this->post($base.'/support-webhook/'.$support->id, ['label' => 'pass', 'version' => 0])->assertRedirect();
+        $this->assertNull($feedback->fresh()->label);
+        $this->get($base.'/feedback-form/export/'.$feedback->policy_hash)->assertNotFound();
+        $this->post($base.'/feedback-form/'.$feedback->id, ['label' => 'fail', 'version' => 0])->assertRedirect();
+        foreach ([$support, $feedback] as $case) {
+            $export = $this->get($base.'/'.$case->dataset.'/export/'.$case->policy_hash)->assertOk()->streamedContent();
+            $rows = explode("\n", trim($export));
+            $this->assertCount(1, $rows);
+            $this->assertSame($case->dataset, json_decode($rows[0], true)['bridge']);
+            $this->assertSame($case->fresh()->label, json_decode($rows[0], true)['expected']);
+        }
+        $this->get($base.'/feedback-form/'.$support->id)->assertNotFound();
+        $this->post($base.'/feedback-form/'.$support->id, ['label' => 'fail', 'version' => 1])->assertNotFound();
+        $this->get($base.'/private-entrypoint')->assertForbidden();
+        $this->assertSame('pass', $support->fresh()->label);
+    }
+
+    public function test_bridge_evaluations_cannot_be_captured_under_another_entrypoint(): void
+    {
+        $bridge = new Bridge('support-webhook', 'Triage.', ['bug' => [Policy::bugReport()]],
+            config: new EvaluationConfig(variants: 0, injectionGuard: false));
+        Classifier::fake([['score' => 1, 'reason' => 'Bug.', 'evidence' => [], 'missing' => []]])->preventStrayPrompts();
+        $evaluation = app(TollTroll::class)->cross($bridge, ['report' => 'Save fails.']);
+        $event = new EvaluationReviewRequested($bridge, 'ticket-42', $evaluation);
+        Event::dispatch($event);
+        Event::dispatch($event);
+        $case = Annotation::sole();
+        $this->assertSame('support-webhook', $case->dataset);
+        $this->assertSame($evaluation->id, $case->prediction['evaluation_id']);
+        $this->expectException(\InvalidArgumentException::class);
+        new EvaluationReviewRequested('feedback-form', 'ticket-42', $evaluation);
     }
 
     #[DataProvider('referenceSets')]
@@ -548,7 +603,9 @@ class AnnotationsTest extends TestCase
         $this->post($dismiss)->assertForbidden();
         Gate::define('review-toll-troll-annotations', fn () => true);
         $this->get($dashboard)->assertSee($first['finding'])->assertSee($second['finding'])
-            ->assertSee('using your ground-truth set')->assertSee('1 / 2');
+            ->assertSee('using your ground-truth set')->assertSee('1 / 2')
+            ->assertSee('name="dashboard" value="1"', false)->assertSee('id="shortcuts-enabled"', false);
+        $this->get($dashboard.'/support')->assertSee('name="dashboard" value="0"', false);
         $this->post(str_replace('/support/', '/other/', $dismiss))->assertNotFound();
         $this->post(str_replace(AnnotationAnalysis::suggestionKey($first), str_repeat('0', 64), $dismiss))->assertNotFound();
         foreach ([1, 2] as $attempt) {

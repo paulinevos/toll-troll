@@ -13,6 +13,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Vos\TollTroll\Agents\Classifier;
 use Vos\TollTroll\Agents\Paraphraser;
+use Vos\TollTroll\Bridge;
 use Vos\TollTroll\Context;
 use Vos\TollTroll\Evaluation;
 use Vos\TollTroll\EvaluationConfig;
@@ -41,6 +42,41 @@ class TollTrollTest extends TestCase
         Event::fake([ReviewRequired::class]);
         Paraphraser::fake([$this->rewrite(1), $this->rewrite(2), $this->rewrite(3)])->preventStrayPrompts();
         Classifier::fake(fn () => $this->answer())->preventStrayPrompts();
+    }
+
+    public function test_crossing_a_bridge_uses_its_instructions_guards_and_configuration_and_keeps_its_name_in_jobs(): void
+    {
+        $bridge = new Bridge('support-webhook', 'Triage incoming support reports.', ['bug' => [Policy::bugReport()]],
+            guards: [new Policy('in_scope', 'Pass for reports about this application.')],
+            config: new EvaluationConfig(variants: 0, injectionGuard: false));
+        $sources = ['report' => 'Saving a draft returns HTTP 500.'];
+        $result = app(TollTroll::class)->cross($bridge, $sources);
+        $this->assertSame('support-webhook', $result->bridge);
+        $this->assertSame($bridge->instructions, $result->context->instructions);
+        $this->assertSame($sources, $result->context->sources);
+        $this->assertSame([], $result->variants);
+        $this->assertSame(['in_scope'], array_map(fn ($guard) => $guard->policy->id, $result->guards));
+        $this->assertTrue($result->allows('bug'));
+        Paraphraser::assertNeverPrompted();
+        app(TollTroll::class)->dispatch($result, ['bug' => fn ($evaluation) => new RecordDecision($evaluation)]);
+        Queue::assertPushed(RecordDecision::class, fn ($job) => $job->evaluation->bridge === 'support-webhook');
+        $second = app(TollTroll::class)->cross($bridge, ['report' => 'Different input.']);
+        $this->assertNotSame($result->id, $second->id);
+        $this->assertSame('support-webhook', $second->bridge);
+        $this->assertSame($sources, $result->context->sources);
+        $this->assertSame(3, config('toll-troll.variants'));
+    }
+
+    #[DataProvider('invalidBridges')]
+    public function test_bridges_require_an_entrypoint_name_and_trusted_instructions(string $name, string $instructions): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new Bridge($name, $instructions, ['bug' => [Policy::bugReport()]]);
+    }
+
+    public static function invalidBridges(): array
+    {
+        return [['', 'Triage.'], ['support/webhook', 'Triage.'], [str_repeat('a', 65), 'Triage.'], ['support', ' ']];
     }
 
     public function test_opt_in_paraphrasing_preserves_original_and_three_variants_and_queues_snapshot(): void

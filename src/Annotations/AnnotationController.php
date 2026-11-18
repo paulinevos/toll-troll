@@ -22,11 +22,8 @@ class AnnotationController
     public function index(Request $request)
     {
         $this->authorize($request);
-        $datasets = Annotation::query()->distinct()->pluck('dataset')->filter(fn ($dataset) => Gate::forUser($request->user())->allows('review-toll-troll-annotations', [$dataset]));
 
-        $advice = $datasets->flatMap(fn ($dataset) => app(AnalyzeAnnotations::class)->advice($dataset, (string) $request->user()->getAuthIdentifier()))->values();
-
-        return $this->view(compact('datasets', 'advice'));
+        return $this->view($request, []);
     }
 
     public function show(Request $request, string $dataset, ?string $id = null)
@@ -63,19 +60,22 @@ class AnnotationController
                 : ($cases->hasMorePages() ? route('toll-troll-annotations.show', [$dataset, 'page' => $cases->currentPage() + 1]) : null);
         }
         $pending = Annotation::where('dataset', $dataset)->whereNull('label')->count();
-        $advice = app(AnalyzeAnnotations::class)->advice($dataset, (string) $request->user()->getAuthIdentifier());
 
-        return $this->view(compact('dataset', 'cases', 'selected', 'pending', 'previousUrl', 'nextUrl', 'advice'));
+        return $this->view($request, compact('dataset', 'cases', 'selected', 'pending', 'previousUrl', 'nextUrl'));
     }
 
-    private function view(array $data)
+    private function view(Request $request, array $data)
     {
+        $bridges = Annotation::query()->distinct()->orderBy('dataset')->pluck('dataset')
+            ->filter(fn ($name) => Gate::forUser($request->user())->allows('review-toll-troll-annotations', [$name]));
+        $advice = (isset($data['dataset']) ? collect([$data['dataset']]) : $bridges)
+            ->flatMap(fn ($name) => app(AnalyzeAnnotations::class)->advice($name, (string) $request->user()->getAuthIdentifier()))->values();
         $shortcutsScript = file_get_contents(__DIR__.'/../../resources/js/annotations.js');
         $headers = self::HEADERS;
         // Only this package-owned script may execute; source context remains escaped.
         $headers['Content-Security-Policy'] .= "; script-src 'sha256-".base64_encode(hash('sha256', $shortcutsScript, true))."'";
 
-        return response()->view('toll-troll-annotations::review', $data + compact('shortcutsScript'), 200, $headers);
+        return response()->view('toll-troll-annotations::review', $data + compact('bridges', 'advice', 'shortcutsScript'), 200, $headers);
     }
 
     public function store(Request $request, string $dataset, string $id)
@@ -124,7 +124,7 @@ class AnnotationController
 
         return response()->streamDownload(function () use ($query) {
             foreach ($query->orderBy('id')->cursor() as $case) {
-                echo json_encode(['id' => $case->id, 'expected' => $case->label, 'instructions' => $case->context['instructions'],
+                echo json_encode(['id' => $case->id, 'bridge' => $case->dataset, 'expected' => $case->label, 'instructions' => $case->context['instructions'],
                     'sources' => $case->context['sources'], 'policy' => $case->policy, 'note' => $case->note,
                     ...($case->prediction === null ? [] : ['prediction' => $case->prediction]),
                 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)."\n";

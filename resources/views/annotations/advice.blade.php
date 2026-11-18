@@ -12,7 +12,7 @@
                             <div><span class="eyebrow">{{ $analysis->dataset }}</span><h2>{{ ucfirst(str_replace('_', ' ', $suggestion['category'])) }}</h2></div>
                             <form method="post" action="{{ route('toll-troll-annotations.advice.dismiss', [$analysis->dataset, $analysis->id, $card['key']]) }}">
                                 @csrf
-                                <input type="hidden" name="dashboard" value="{{ isset($datasets) ? '1' : '0' }}">
+                                <input type="hidden" name="dashboard" value="{{ !isset($dataset) ? '1' : '0' }}">
                                 <button class="advice-dismiss" type="submit" aria-label="Dismiss this advice for you" title="Dismiss this advice for you">×</button>
                             </form>
                         </div>
@@ -39,7 +39,7 @@
                     </div>
                 </div>
                 <p class="muted small advice-keyboard-help" data-advice-help hidden>J / K browse advice outside the review form.</p>
-                @if(isset($datasets) && $advice->count() > 1)
+                @if(!isset($dataset) && $advice->count() > 1)
                     <label class="muted small advice-keyboard-help" data-shortcuts hidden><input id="shortcuts-enabled" type="checkbox" checked> Keyboard shortcuts</label>
                 @endif
             </div>

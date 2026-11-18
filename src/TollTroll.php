@@ -18,11 +18,22 @@ use Vos\TollTroll\Events\ReviewRequired;
 
 class TollTroll
 {
+    /** @param array<string, string> $sources Untrusted input arriving at this bridge's entrypoint. */
+    public function cross(Bridge $bridge, array $sources): Evaluation
+    {
+        return $this->run(new Context($bridge->instructions, $sources), $bridge->branches, $bridge->guards, $bridge->config, $bridge->name);
+    }
+
     /**
      * @param  array<string, list<PolicyContract>>  $branches  Sequential policies in each independent branch.
      * @param  list<PolicyContract>  $guards  Explicit guards that every branch must pass.
      */
     public function evaluate(Context $context, array $branches, array $guards = [], ?EvaluationConfig $config = null): Evaluation
+    {
+        return $this->run($context, $branches, $guards, $config);
+    }
+
+    private function run(Context $context, array $branches, array $guards, ?EvaluationConfig $config, ?string $bridge = null): Evaluation
     {
         $overrides = $config ?? new EvaluationConfig;
         $defaults = config('toll-troll');
@@ -120,7 +131,7 @@ class TollTroll
             $branchResults[$name] = $this->sequence($policies, $context, $samples, $guarded);
         }
 
-        return new Evaluation((string) Str::uuid7(), $context, $variants, $guardResults, $branchResults, $errors);
+        return new Evaluation((string) Str::uuid7(), $context, $variants, $guardResults, $branchResults, $errors, $bridge);
     }
 
     /**
