@@ -54,7 +54,8 @@
                 <nav class="queue" aria-label="Annotation cases">
                     @foreach($cases as $case)
                         <a class="case" href="{{ route('toll-troll-annotations.show', [$dataset, $case->id, 'page' => $cases->currentPage()]) }}" @if($selected?->id === $case->id) aria-current="page" @endif>
-                            <strong>{{ $case->sample_key }}</strong><span class="tag {{ $case->label ?? 'pending' }}">{{ ucfirst($case->label ?? 'pending') }}</span>
+                            <strong>{{ $case->sample_key }}</strong>
+                            @include('toll-troll-annotations::status', ['annotation' => $case, 'iconOnly' => true])
                             @if($case->prediction)<span class="case-meta muted small">{{ $case->prediction['branch'] ?? 'Guard' }} · {{ $case->policy['id'] }} · Run {{ substr($case->prediction['evaluation_id'], -8) }}</span>@endif
                         </a>
                     @endforeach
@@ -71,8 +72,9 @@
                         @if($nextUrl)<a href="{{ $nextUrl }}" rel="next">Next case <kbd data-shortcuts hidden>E / O</kbd> →</a>@else<span class="muted" aria-disabled="true">Next case →</span>@endif
                     </nav>
                     <div class="panel context-panel">
-                        <div class="panel-heading"><span class="eyebrow">Case details</span><span class="tag {{ $selected->label ?? 'pending' }}">{{ ucfirst($selected->label ?? 'pending') }}</span></div>
+                        <div class="panel-heading"><span class="eyebrow">Case details</span>@include('toll-troll-annotations::status', ['annotation' => $selected])</div>
                         <h2 class="case-title">{{ $selected->sample_key }}</h2>
+                        @if($selected->label !== null)<p class="muted small">Human label: {{ ucfirst($selected->label) }}</p>@endif
                         <div class="policy-block"><h3>Policy <code>{{ $selected->policy['id'] }}</code></h3><p class="policy">{{ $selected->policy['criteria'] }}</p></div>
                         <details open><summary>Trusted target instructions</summary><pre>{{ $selected->context['instructions'] }}</pre></details>
                         @foreach($selected->context['sources'] as $source => $text)

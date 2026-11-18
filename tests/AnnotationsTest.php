@@ -268,6 +268,53 @@ class AnnotationsTest extends TestCase
         Http::assertNothingSent();
     }
 
+    #[DataProvider('annotationStatuses')]
+    public function test_queue_and_case_details_show_annotation_status_separately_from_labels(?string $label, ?string $verdict, string $status): void
+    {
+        Event::dispatch(new AnnotationRequested('support', 'ticket-1', new Context('Triage.', ['report' => 'Save fails.']), Policy::bugReport()));
+        $case = Annotation::sole();
+        $case->update(['label' => $label, 'prediction' => $verdict === null ? null : [
+            'evaluation_id' => 'run-1', 'branch' => 'bug', 'verdict' => $verdict, 'assessments' => [], 'variants' => [], 'errors' => [],
+        ]]);
+        $this->actingAs(new GenericUser(['id' => 7]));
+        Gate::define('review-toll-troll-annotations', fn () => true);
+
+        $response = $this->get('/toll-troll/annotations/support/'.$case->id)->assertOk();
+        $document = new \DOMDocument;
+        @$document->loadHTML('<?xml encoding="UTF-8">'.$response->getContent());
+        $xpath = new \DOMXPath($document);
+        foreach (["//nav[@aria-label='Annotation cases']", "//div[contains(@class, 'context-panel')]"] as $region) {
+            $badges = $xpath->query($region."//span[contains(@class, 'annotation-status')]");
+            $this->assertCount(1, $badges);
+            $this->assertStringStartsWith($status.' · ', $badges->item(0)->getAttribute('aria-label'));
+            $this->assertSame(str_contains($region, 'nav') ? '' : $status, trim($badges->item(0)->textContent));
+            $this->assertSame('img', $badges->item(0)->getAttribute('role'));
+            $this->assertSame(1, $xpath->query('.//svg[@aria-hidden="true"]', $badges->item(0))->length);
+        }
+        if ($label !== null) {
+            $response->assertSeeText('Human label: '.ucfirst($label));
+        }
+    }
+
+    public static function annotationStatuses(): array
+    {
+        return [
+            'pending prediction' => [null, 'fail', 'Pending'],
+            'pending blind' => [null, null, 'Pending'],
+            'correct pass' => ['pass', 'pass', 'Annotated · Agrees'],
+            'correct fail' => ['fail', 'fail', 'Annotated · Agrees'],
+            'false fail' => ['pass', 'fail', 'Annotated · Disagrees'],
+            'false pass' => ['fail', 'pass', 'Annotated · Disagrees'],
+            'matching unknown' => ['unknown', 'unknown', 'Annotated · Agrees'],
+            'corrected unknown' => ['pass', 'unknown', 'Annotated · Disagrees'],
+            'human unknown' => ['unknown', 'pass', 'Annotated · Disagrees'],
+            'errored prediction' => ['pass', 'error', 'Annotated · Unknown'],
+            'skipped prediction' => ['fail', 'skipped', 'Annotated · Unknown'],
+            'reviewed blind' => ['fail', null, 'Annotated'],
+            'unknown blind' => ['unknown', null, 'Annotated · Unknown'],
+        ];
+    }
+
     public function test_evaluation_capture_keeps_paraphrase_errors_and_is_atomic(): void
     {
         config()->set('toll-troll.variants', 1);
