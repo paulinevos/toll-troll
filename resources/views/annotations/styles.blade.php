@@ -153,9 +153,6 @@
     kbd { display: inline-block; border: 1px solid var(--color-border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; font: 11px/1.5 var(--font-body); color: var(--color-muted); background: var(--color-background); white-space: nowrap; }
     .choice kbd { margin-left: 4px; }
     .shortcut-help { margin-top: 20px; border-top: 1px solid var(--color-border); padding-top: 16px; font-size: 12px; }
-    .shortcut-settings { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
-    .shortcut-settings label { cursor: pointer; }
-    .shortcut-settings input { accent-color: var(--color-primary); }
     #review-draft { color: var(--color-unknown); }
     [hidden] { display: none !important; }
     @media (max-width: 760px) {

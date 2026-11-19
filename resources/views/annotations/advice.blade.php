@@ -22,6 +22,7 @@
                         <p><strong>Try:</strong> {{ $suggestion['change'] }}</p>
                         <p><strong>Benchmark:</strong> Compare the current configuration with this suggested improvement using your ground-truth set. Keep evaluation cases held out from tuning.</p>
                         <p><strong>Check:</strong> {{ $suggestion['validation'] }}</p>
+                        <p class="small"><a href="{{ route('toll-troll-annotations.export', [$analysis->dataset, $analysis->policy_hash]) }}">Download ground truth (JSONL)</a> · <a href="https://github.com/paulinevos/toll-troll/blob/main/docs/benchmarking.md#benchmark-an-advice-suggestion" target="_blank" rel="noreferrer">How to benchmark this advice ↗</a></p>
                         <p class="small">Supporting cases:
                             @foreach(array_unique($suggestion['annotation_ids']) as $id)
                                 <a href="{{ route('toll-troll-annotations.show', [$analysis->dataset, $id]) }}">{{ substr($id, -8) }}</a>{{ $loop->last ? '' : ', ' }}
@@ -33,15 +34,12 @@
                 <div class="advice-footer">
                     <p class="muted small advice-caution">An experiment, not a proven improvement.<br>Nothing has been changed automatically.</p>
                     <div class="advice-navigation" aria-label="Browse advice" data-advice-controls hidden>
-                        <div class="advice-nav-key"><button type="button" data-advice-prev aria-label="Previous advice" aria-keyshortcuts="j">←</button><kbd data-advice-key>J</kbd></div>
+                        <div class="advice-nav-key"><button type="button" data-advice-prev aria-label="Previous advice">←</button><kbd data-advice-key hidden>J</kbd></div>
                         <output data-advice-position aria-live="polite" aria-atomic="true">1 / {{ $advice->count() }}</output>
-                        <div class="advice-nav-key"><button type="button" data-advice-next aria-label="Next advice" aria-keyshortcuts="k">→</button><kbd data-advice-key>K</kbd></div>
+                        <div class="advice-nav-key"><button type="button" data-advice-next aria-label="Next advice">→</button><kbd data-advice-key hidden>K</kbd></div>
                     </div>
                 </div>
                 <p class="muted small advice-keyboard-help" data-advice-help hidden>J / K browse advice outside the review form.</p>
-                @if(!isset($dataset) && $advice->count() > 1)
-                    <label class="muted small advice-keyboard-help" data-shortcuts hidden><input id="shortcuts-enabled" type="checkbox" checked> Keyboard shortcuts</label>
-                @endif
             </div>
         </div>
     </section>

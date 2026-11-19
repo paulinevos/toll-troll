@@ -524,6 +524,8 @@ class AnnotationsTest extends TestCase
         foreach ([$base, $base.'/support'] as $url) {
             $this->get($url)->assertOk()->assertSee('The Toll Troll has analyzed your annotations and offers this advice:')
                 ->assertSee('&lt;script&gt;advice-marker&lt;/script&gt;', false)->assertDontSee('<script>advice-marker', false)
+                ->assertSee(route('toll-troll-annotations.export', ['support', $analysis->policy_hash]), false)
+                ->assertSee('docs/benchmarking.md#benchmark-an-advice-suggestion', false)
                 ->assertSee(route('toll-troll-annotations.show', ['support', $ids[0]]), false);
         }
         $this->artisan('toll-troll:analyze-annotations')->assertSuccessful();
@@ -651,8 +653,9 @@ class AnnotationsTest extends TestCase
         Gate::define('review-toll-troll-annotations', fn () => true);
         $this->get($dashboard)->assertSee($first['finding'])->assertSee($second['finding'])
             ->assertSee('using your ground-truth set')->assertSee('1 / 2')
-            ->assertSee('name="dashboard" value="1"', false)->assertSee('id="shortcuts-enabled"', false);
-        $this->get($dashboard.'/support')->assertSee('name="dashboard" value="0"', false);
+            ->assertSee('name="dashboard" value="1"', false)->assertDontSee('id="shortcuts-enabled"', false);
+        $this->get($dashboard.'/support')->assertSee('name="dashboard" value="0"', false)
+            ->assertDontSee('id="shortcuts-enabled"', false);
         $this->post(str_replace('/support/', '/other/', $dismiss))->assertNotFound();
         $this->post(str_replace(AnnotationAnalysis::suggestionKey($first), str_repeat('0', 64), $dismiss))->assertNotFound();
         foreach ([1, 2] as $attempt) {

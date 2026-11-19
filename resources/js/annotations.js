@@ -1,25 +1,19 @@
 (() => {
     const form = document.querySelector('.review-panel');
-    const enabled = document.querySelector('#shortcuts-enabled');
-    document.querySelectorAll('[data-shortcuts]').forEach(element => { element.hidden = false; });
-    let shortcutsEnabled = true;
-    try { shortcutsEnabled = localStorage.getItem('toll-troll-shortcuts') !== 'off'; } catch {}
-    if (enabled) {
-        enabled.checked = shortcutsEnabled;
-        enabled.addEventListener('change', () => {
-            shortcutsEnabled = enabled.checked;
-            try { localStorage.setItem('toll-troll-shortcuts', shortcutsEnabled ? 'on' : 'off'); } catch {}
-            updateAdviceHints();
-        });
-    }
-
+    const desktop = matchMedia('(min-width: 761px) and (hover: hover) and (pointer: fine)');
     const carousel = document.querySelector('[data-advice-carousel]');
     const cards = carousel ? [...carousel.querySelectorAll('[data-advice-card]')] : [];
-    const updateAdviceHints = () => {
-        carousel?.querySelectorAll('[data-advice-key]').forEach(key => { key.hidden = !shortcutsEnabled; });
+    const updateShortcutHints = () => {
+        document.querySelectorAll('[data-shortcuts], [data-advice-key]').forEach(element => { element.hidden = !desktop.matches; });
+        carousel?.querySelectorAll('[data-advice-prev], [data-advice-next]').forEach(button => {
+            if (desktop.matches) button.setAttribute('aria-keyshortcuts', button.hasAttribute('data-advice-prev') ? 'j' : 'k');
+            else button.removeAttribute('aria-keyshortcuts');
+        });
         const help = carousel?.querySelector('[data-advice-help]');
-        if (help) help.hidden = !shortcutsEnabled || !form || cards.length < 2;
+        if (help) help.hidden = !desktop.matches || !form || cards.length < 2;
     };
+    desktop.addEventListener('change', updateShortcutHints);
+    updateShortcutHints();
     if (cards.length) {
         let position = 0;
         const previous = carousel.querySelector('[data-advice-prev]');
@@ -44,11 +38,10 @@
         next.addEventListener('click', () => move(1));
         carousel.classList.add('advice-enhanced');
         carousel.querySelector('[data-advice-controls]').hidden = cards.length < 2;
-        updateAdviceHints();
         render();
 
         document.addEventListener('keydown', event => {
-            if (!shortcutsEnabled || cards.length < 2 || event.defaultPrevented || event.repeat || event.isComposing
+            if (!desktop.matches || cards.length < 2 || event.defaultPrevented || event.repeat || event.isComposing
                 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
             const target = event.target;
             if (target.isContentEditable || target.closest('.review-panel, textarea, select, input')) return;
@@ -85,7 +78,7 @@
     window.addEventListener('pageshow', () => { submitting = false; updateDraft(); });
 
     document.addEventListener('keydown', event => {
-        if (!enabled.checked || submitting || event.defaultPrevented || event.repeat || event.isComposing) return;
+        if (!desktop.matches || submitting || event.defaultPrevented || event.repeat || event.isComposing) return;
         if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
             event.preventDefault();
             form.requestSubmit();

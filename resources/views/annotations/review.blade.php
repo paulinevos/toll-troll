@@ -103,8 +103,8 @@
                         <div class="note-heading"><label for="note">Reviewer note <span class="muted">(optional)</span></label><span class="muted small" id="note-help">Up to 2,000 characters</span></div>
                         <textarea id="note" name="note" maxlength="2000" rows="3" aria-describedby="note-help{{ $errors->has('note') ? ' review-error' : '' }}" @if($errors->has('note')) aria-invalid="true" @endif placeholder="Explain your label for future reviewers.">{{ old('note', $selected->note) }}</textarea>
                         <div class="form-footer"><button type="submit">Save ground truth <span aria-hidden="true">→</span></button><span class="muted small">Saves a label. Does not dispatch work.</span></div>
+                        <p class="small" id="review-draft" role="status"></p>
                         <div class="shortcut-help" data-shortcuts hidden>
-                            <div class="shortcut-settings"><label><input id="shortcuts-enabled" type="checkbox" checked> Keyboard shortcuts</label><span id="review-draft" role="status"></span></div>
                             <p class="muted">Keys select, never save. <kbd>Ctrl / ⌘ + Enter</kbd> saves. Letter shortcuts pause while typing notes. Navigation warns before discarding unsaved changes.</p>
                         </div>
                     </form>

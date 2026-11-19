@@ -125,6 +125,8 @@ When advice is ready, the dashboard and dataset review page display the troll ic
 
 Multiple suggestions share a carousel with previous/next arrows, a position indicator, and J/K keycap hints. J moves to the previous suggestion; K moves to the next, without wrapping. With focus inside the review form, J/K keep their Pass/Fail meaning instead; typing never browses advice. With one suggestion, navigation is hidden. Without JavaScript, all suggestions remain readable. Each card explicitly asks you to benchmark the current configuration against the suggested improvement using a ground-truth set, keeping evaluation cases held out from tuning.
 
+Each card also links to its exact revision's **ground-truth JSONL export** and the [step-by-step advice benchmarking guide](benchmarking.md#benchmark-an-advice-suggestion). The guide covers baseline/proposed profiles, dry-run and collection commands, zero-inference threshold replay, and when changed policies or inputs require reviewing labels again. There is no UI-triggered benchmark or automatic policy change.
+
 The × button dismisses only that suggestion for the signed-in reviewer. Dismissal survives reloads and reanalysis that returns the same suggestion, but does not hide other suggestions or affect other reviewers. Changed suggestions can appear again. Dismissal is an authorized, CSRF-protected POST, not an inference or configuration change.
 
 ### Retiring advice when a policy changes
@@ -147,7 +149,7 @@ Reviewer IDs and suggestion hashes are stored in `toll_troll_annotation_advice_d
 
 ## Keyboard shortcuts
 
-Both clusters are active, arranged for either hand on a QWERTY keyboard:
+Shortcuts are always on in desktop layouts (at least 761px wide, with a primary mouse or trackpad). Both clusters are active, arranged for either hand on a QWERTY keyboard. On phones and touch-only devices, shortcuts and their hints are disabled; the ordinary buttons and links remain available. Resizing or changing the primary input updates this automatically.
 
 | Action | Left hand | Right hand |
 | --- | --- | --- |
@@ -160,7 +162,7 @@ Both clusters are active, arranged for either hand on a QWERTY keyboard:
 
 Selecting a label does **not** save or advance. Save explicitly; the saved case stays open. Previous/next follows the pending-first queue across pages, does not wrap, and reflects the new queue position after saving. Unsaved label or note changes trigger the browser's leave-page warning.
 
-Letter shortcuts ignore text inputs, editable content, modifier combinations, held-key repeats, and IME composition. Ctrl/Cmd + Enter also works in the note field. When multiple advice cards are present, J/K browse them outside the review form; A/S/D still select labels. Turn off **Keyboard shortcuts** below the review form (or in the dashboard's advice bubble) to disable all shortcuts; the preference is remembered in this browser when local storage is available. Ordinary links, radio buttons, and form submission still work without JavaScript. The page's content security policy permits only the package-owned script by its SHA-256 hash, not arbitrary inline scripts from source context.
+Letter shortcuts ignore text inputs, editable content, modifier combinations, held-key repeats, and IME composition. Ctrl/Cmd + Enter also works in the note field. When multiple advice cards are present, J/K browse them outside the review form; A/S/D still select labels. There is no opt-in checkbox or stored shortcut preference. Ordinary links, radio buttons, and form submission still work without JavaScript. The page's content security policy permits only the package-owned script by its SHA-256 hash, not arbitrary inline scripts from source context.
 
 ## Privacy and retention
 
