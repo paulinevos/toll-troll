@@ -9,8 +9,7 @@ use Vos\TollTroll\Evaluation;
 use Vos\TollTroll\Policy;
 use Vos\TollTroll\TollTroll;
 
-// Bind these to application services. Implement current authorization, input
-// limits, and side-effect idempotency there; a policy pass is not permission.
+// Bind these to application services.
 interface BugInvestigator
 {
     public function investigate(Context $context, string $idempotencyKey): string;

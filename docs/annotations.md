@@ -1,6 +1,4 @@
-# 🧌 Human ground truth, opt-in
-
-Annotations ship in **the same `vos/toll-troll` package**. Composer has no feature flags that selectively install code. Only `TollTrollServiceProvider` is auto-discovered; annotations remain inactive unless you explicitly register their provider. No annotation tables are created automatically, and ordinary evaluations never store annotation data.
+# 🧌 Human ground truth
 
 ## Bridges and entrypoints
 

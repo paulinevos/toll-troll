@@ -27,8 +27,8 @@ Exports contain human `expected` labels and historical `prediction` snapshots. T
 One bridge to investigate, another to start a fix. `two-bridge-test.php` demonstrates cascading with ordinary Laravel jobs:
 
 1. Initial policies permit an `InvestigateBug` job.
-2. The job calls your `BugInvestigator`, places its findings alongside the original report in a fresh `Context`, and evaluates the next phase.
-3. With default configuration, a fresh injection guard and `actionable_investigation` policy must pass before `StartFix` calls your `BugFixer`. Disabling `injection_guard.enabled` omits automatic screening in both phases.
+2. The job calls your `BugInvestigator` agent, places its findings alongside the original report in a fresh `Context`, and evaluates the next phase.
+3. With default configuration, a fresh injection guard and `actionable_investigation` policy must pass before `StartFix` calls your `BugFixer` agent. Disabling `injection_guard.enabled` omits automatic screening in both phases.
 
 Copy the classes into your application's autoloaded namespaces (one class/interface per file), bind `BugInvestigator` and `BugFixer` to your services, and adapt the second phase's trusted instructions and rubric to the actual fixing agent. Start the first phase like this, after importing your copied `InvestigateBug` class:
 
@@ -43,7 +43,7 @@ $triage = $troll->evaluate($context, [
 $troll->dispatch($triage, ['investigate' => fn ($result) => new InvestigateBug($result)]);
 ```
 
-Intermediate output stays in untrusted sources, not instructions. The second phase carries both the original report and new findings without source-name collisions. A passing classification judges the report, not whether the bug was actually reproduced or the proposed fix verified; use real tests for those facts. The sample's `handle()` result is not implicitly piped by Laravel, and `Bus::chain()` is not used as a return-value pipeline.
+Intermediate output are considered untrusted sources, not instructions. The second phase carries both the original report and new findings. A passing classification judges the report, not whether the bug was actually reproduced or the proposed fix verified; use real tests for those facts.
 
 Your services must enforce current authorization, sandbox agent tools, limit input size, and deduplicate side effects using the supplied idempotency keys. Retrying the investigation job can generate a fresh second evaluation: persist and reuse the continuation evaluation in your application when you need a stable final action key, and use transactional/outbox delivery where appropriate. This example does not provide durable workflow storage or exactly-once execution.
 
@@ -58,13 +58,11 @@ $triage = require base_path('examples/bug-triage.php');
 $evaluation = $triage($context, fn ($result) => new StartFixAgent($result));
 ```
 
-`StartFixAgent` belongs to your application. Its tool permissions, execution isolation, idempotency, and authorization remain application responsibilities. Use the failed policy's criteria and original context to decide what to ask the reporter; judgments do not include generated missing-information explanations.
+If triage evaluation passes, the `StartFixAgent` job is queued.
 
 ## Review notification
 
 `review-notification.php` returns a registration function accepting an application-chosen notifiable reviewer. Register it once in your service provider, then use `$tollTroll->dispatch()`; a blocked or uncertain evaluation emits `ReviewRequired` and queues a standard Laravel mail notification. No raw context, generated rationale, or evidence is included in email. Persist the evaluation in your application so the reviewer can look it up securely by ID.
-
-For multitenant applications, resolve the reviewer per event using trusted tenant metadata rather than capturing a single global reviewer. Deduplicate notifications when retrying dispatch. Queuing a review notification is intentional even when task jobs are blocked.
 
 ## 🧌 Human tool approval
 

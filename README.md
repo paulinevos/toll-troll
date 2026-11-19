@@ -5,28 +5,31 @@
   <img src="resources/images/tolltroll-wordmark.svg" alt="TollTroll" width="320">
 </picture></h1>
 
-A Laravel policy gate for deciding whether agent workflows should proceed, stop, or ask a human. Evaluate context against layered policies before dispatching Laravel jobs, then benchmark those policies against your own ground truth. Uses the `laravel/ai` classification API without selecting an inference vendor.
+A Laravel policy gate for deciding whether agent workflows should proceed, stop, or ask a human. Evaluate context against 
+layered policies before dispatching Laravel jobs, then benchmark those policies against your own ground truth.
 
 Put a troll between incoming context and the work it might trigger:
 
 - **Support triage:** check whether a bug report describes expected behavior, actual behavior, and reproduction steps before queueing an implementation agent.
 - **Product feedback:** identify feature requests, apply your own effort/value rubric, and notify the product team when a request qualifies.
 - **Human review:** route uncertain cases to an application-owned review workflow instead of starting an agent with incomplete information.
+- **Input classification:** classify and label any text-based input against your own criteria, then check and annotate the results for future benchmarking.
 - **Policy tuning:** label real conversations and compare models, paraphrases, weights, and thresholds against that ground truth before changing your workflow.
 
 ## Installation
 
-Requires PHP 8.3+, Laravel 12 or 13, and Laravel AI SDK 1.4.1+. Composer resolves the SDK's framework patch requirements.
+Requires PHP 8.3+, Laravel 12 or 13, and Laravel AI SDK 1.3+.
 
 ```sh
 composer require vos/toll-troll
 ```
 
-Laravel discovers the service provider automatically. Configure your inference providers and credentials through the Laravel AI SDK's `config/ai.php`; TollTroll uses the SDK defaults unless you override them. Evaluation needs no migrations or conversation tables. The annotation dashboard is a separate, opt-in setup within the same package.
+Laravel discovers the service provider automatically. Configure your inference providers and credentials through the 
+Laravel AI SDK's `config/ai.php`; TollTroll uses the SDK defaults unless you override them.
 
 ## 🧌 Basic usage
 
-Define a **Bridge** for each input entrypoint: its trusted target instructions, policy branches, guards, and optional evaluation configuration. Send incoming source text across that bridge:
+Give TollTroll the input to classify, and a `Bridge` with a `Policy` sequence to check:
 
 ```php
 use Vos\TollTroll\Bridge;
@@ -40,6 +43,8 @@ $bridge = new Bridge(
     name: 'support-webhook',
     instructions: (string) $implementationAgent->instructions(), // Trusted application configuration.
     branches: [
+        // The troll checks policies in order to decide whether to allow each branch. 
+        // Each branch is independent; the troll may allow both, one, or neither.
         'bug' => [
             Policy::bugReport(),
             Policy::expectedAndActualBehavior(),
@@ -50,10 +55,12 @@ $bridge = new Bridge(
 );
 
 $result = $tollTroll->cross($bridge, [
+    // Pass any relevant context the troll may need to judge the input
     'support-conversation' => $transcript,
     'application-log' => $log,
 ]);
 
+// The troll dispatches jobs for passing branches, and emits a ReviewRequired event when any branch is uncertain or failed.
 $tollTroll->dispatch($result, [
     'bug' => fn (Evaluation $evaluation) => new StartFixAgent($evaluation),
     'feature' => fn (Evaluation $evaluation) => new NotifyProductTeam($evaluation),
@@ -62,25 +69,20 @@ $tollTroll->dispatch($result, [
 
 The injection guard runs before branch policies by default. Each branch advances only when its current policy passes; independent branches can both qualify. `dispatch()` queues only the jobs mapped to allowed branches. The jobs above belong to your application and must implement Laravel's `ShouldQueue`.
 
-Call `$result->allows('bug')` to check the guard and branch together, or `$result->needsReview()` to check for failed guards or uncertain/errored decisions. `cross()` itself never dispatches jobs or review events. Inference is synchronous; run it inside an application job for background processing.
-
-Give different entrypoints different bridge names, even when every rule is identical: `support-webhook` and `feedback-form` keep separate annotation queues, labels, and exports. Reuse a bridge definition for successive inputs at the same entrypoint. Names are stable application-owned identifiers (1–64 letters, digits, underscores, or hyphens), never derived from policy hashes or untrusted input. The evaluation retains the name as `$result->bridge`.
-
 Pass `guards:` and `config: new EvaluationConfig(...)` on `Bridge` to customize its rules. Existing `evaluate($context, $branches, guards: ..., config: ...)` calls remain supported as unnamed evaluations; use `cross()` for entrypoint identity. Existing annotation datasets appear as bridges without a database migration. See [annotations](docs/annotations.md) for capture and switching.
 
 ## 🧌 Features
 
-| Feature | What it gives you |
-| --- | --- |
-| Named bridges | Define a gate per input entrypoint and review its evaluations independently, even when entrypoints share policies. |
-| Layered policies | Check conditions in order, such as bug report → expected/actual behavior → reproduction steps. Stop a branch when a prerequisite does not pass. |
-| Custom policies and guards | Describe your own acceptance criteria. Add mandatory guards before independent business branches. |
-| [Domain references](#-domain-references) | Give the classifier documentation, code, or retrieved knowledge relevant to a policy, separately from the report being judged. |
+| Feature | What it gives you                                                                                                                                             |
+| --- |---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Layered policies | Check conditions in order, such as bug report → expected/actual behavior → reproduction steps. Stop a branch when a prerequisite does not pass.               |
+| Custom policies and guards | Describe your own acceptance criteria. Add mandatory guards before independent business branches.                                                             |
+| [Domain references](#-domain-references) | Give the classifier documentation, code, or retrieved knowledge relevant to a policy, separately from the report being judged.                                |
 | Native decisions and automatic batching | Choose one classifier per bridge; policy questions share requests automatically. Compare classifiers in benchmarks and optionally assess paraphrased context. |
-| [Policy benchmarks](#benchmark-your-policies) | Compare models and scoring settings against labeled data; replay saved judgments without more inference calls. |
-| [Human annotation](#human-annotation) | Capture selected real-world cases, label them in a guarded dashboard, and export ground truth for benchmarks. |
-| Laravel jobs and review events | Queue application-owned work for passing branches or notify a reviewer through Laravel listeners and notifications. |
-| Laravel Boost guidelines | Give coding agents package-specific guidance for integration, annotations, and benchmark collection/replay. |
+| Paraphrasing                                  | Configure input paraphrasing to ascertain how untrusted input still passes with slightly different phrasing.                                                  |
+| [Policy benchmarks](#benchmark-your-policies) | Compare models and scoring settings against labeled data; replay saved judgments without more inference calls.                                                |
+| [Human annotation](#human-annotation)         | Capture real-world cases, label them in a guarded dashboard, and export the ground truth for benchmarks.                                                      |
+| Laravel jobs and review events                | Queue application-owned work for passing branches or notify a reviewer through Laravel listeners and notifications.                                           |
 
 ### Custom policies
 
@@ -91,13 +93,17 @@ new Policy('low_effort', $yourTrustedEffortRubric);
 new Policy('high_value', $yourTrustedValueRubric);
 ```
 
-Put these in a branch alongside built-in policies. Pass `guards: [new Policy(...)]` to `evaluate()` for additional checks that every branch must pass, after injection screening. Criteria must come from trusted application configuration, never from the context being classified.
+Put these in a branch alongside built-in policies. Pass `guards: [new Policy(...)]` to `evaluate()` for additional 
+checks that every branch must pass, after injection screening. Criteria must come from trusted application configuration, 
+never from the context being classified.
 
-Applications can also implement `Vos\TollTroll\Contracts\Policy` with their own value objects:
+Or implement `Vos\TollTroll\Contracts\Policy` with your own value objects:
 
 ```php
 use Vos\TollTroll\Contracts\Policy as PolicyContract;
+use Vos\TollTroll\PolicyConfig;
 
+#[PolicyConfig(timeout: 30)]
 final readonly class DocumentedBehavior implements PolicyContract
 {
     public function __construct(private array $documents) {}
@@ -110,17 +116,10 @@ final readonly class DocumentedBehavior implements PolicyContract
 }
 ```
 
-Use these objects in branches, explicit guards, `assess()`, annotation events, or a benchmark suite's `policy`. TollTroll copies the five contract values into a validated immutable `Policy` snapshot before use. Results, queued jobs, and stored annotations retain that snapshot, not your custom class or its extra fields. Return stable, resolved data; resolve files, APIs, or vector searches in the application before passing the policy. Existing constructors, public properties, and built-in factories remain supported. The method-based contract works on PHP 8.3 without requiring PHP 8.4 property hooks.
-
-### Optional injection screening
-
-Set `injection_guard.enabled` to `false` in `config/toll-troll.php` to omit the automatic injection policy. Explicit `guards:` still run and must pass; with none, branch policies alone control dispatch. Disabling this check also disables its automatic screening of references across policies. `guarded()` then means no configured guard or evaluation error blocked the run, not that injection screening occurred. Old published configurations without `enabled` keep screening on.
-
 ### 🧌 Domain references
 
-To help the TollTroll make better decisions, give it additional context for your use case. For example, an API contract can help distinguish a bug from intended behavior, and relevant code can explain what the application currently supports. No need to make the troll guess what lives on the other side of the bridge.
-
-Pass named documentation, code, or other domain knowledge alongside a policy. Resolve the text with Laravel's facades or your own retrieval code:
+To help the TollTroll make better decisions, give it additional context for your use case. For example, an API contract 
+can help distinguish a bug from intended behavior, and relevant code can explain what the application currently supports.
 
 ```php
 use Illuminate\Support\Facades\File;
@@ -147,41 +146,44 @@ $policy = Policy::bugReport()->withReferences([
 
 `withReferences()` returns a new validated policy, preserving its identifier, criteria, and thresholds. It **replaces** the reference set rather than merging it; pass `[]` to clear it. The original policy stays unchanged, and you can chain it with `withThresholds()` in either order.
 
-API calls and vector searches work too: retrieve authorized documents in your application and pass their resolved text. Handle retrieval failures, redact secrets, and limit input size before evaluation; TollTroll does not retrieve or truncate content.
+API calls and vector searches work too: retrieve authorized documents in your application and pass their resolved text. 
+Handle retrieval failures, redact secrets, and limit input size before evaluation; TollTroll does not retrieve or truncate content.
 
-References are data, not instructions or facts supplied by the reporter. If a policy may use them to supply a fact, say so in its criteria, as above. A report-completeness policy must not fill in missing reproduction steps from a manual. The classifier is instructed to make this distinction; a judgment is not a guarantee it interpreted the references correctly.
-
-References stay unchanged across samples and do not enter paraphraser prompts. When enabled, the automatic injection guard screens references from all branches and custom guards; each business policy receives only its own references. They are retained in evaluation, annotation, and benchmark snapshots. Changing reference names or text requires new inference and review of affected ground truth.
-
-### Benchmark your policies
-
-`php artisan toll-troll:benchmark` evaluates isolated policies against labeled JSONL records. Compare models, original/repeated/paraphrased sample weights, and pass/fail thresholds. Save the judgments, then replay them to compare weights and thresholds without further inference calls.
-
-Reports include incorrect passes, withheld passes, confusion tables, latency, and SDK token usage. Errors and abstentions remain in the results. Weighted scoring is **benchmark-only**: it never changes the production gate, dispatches jobs, or emits review events. See [benchmarking](docs/benchmarking.md) for setup, dry runs, data limits, and interpretation.
+References are data, not instructions or facts supplied by the reporter. If a policy may use them to supply a fact, say 
+so in its criteria, as above.  
 
 ### Human annotation
 
-Dispatch `EvaluationReviewRequested` with a bridge and completed evaluation to review the predictions actually made for every guard and branch policy. The dashboard keeps model scores/verdicts separate from human expected labels and shows where they agree or disagree. Use `AnnotationRequested` instead for blind labeling without predictions. Both keep annotations separate per bridge, with a bridge switcher, keyboard shortcuts, review history, JSONL exports, and optional retention/account cleanup.
+Dispatch `EvaluationReviewRequested` with a completed evaluation to review the predictions actually made for every bridge. 
+This will publish the evaluation to a dashboard where reviewers can label the results as correct or 
+incorrect (known as **annotation**). Use `AnnotationRequested` instead for blind labeling without predictions.
 
-Everything ships in the same Composer package. No annotation routes, listeners, or migrations load with the default provider. Register `AnnotationServiceProvider`, publish its migrations, and define per-bridge authorization to enable it. See [annotations](docs/annotations.md) for setup, capture, access control, and retention.
+Annotating the results helps establish **ground truth** for benchmarks. Establishing a ground truth allows you to tell 
+the benchmark command what you define as correct or incorrect. This allows you to fine-tune policies for your specific use cases.
 
-Try [Troll Patrol](examples/README.md#-troll-patrol) to review live predictions without actions, or [The Two-Bridge Test](examples/README.md#-the-two-bridge-test) to pass an investigation job's results through a fresh policy gate before starting a fix.
+Try [Troll Patrol](examples/README.md#-troll-patrol) to start annotating and benchmarking without dispatching actual jobs,
+or [The Two-Bridge Test](examples/README.md#-the-two-bridge-test) to pass an investigation job's results through a
+fresh policy gate before starting a fix.
 
-Want to click around first? The repository includes a [seeded Laravel demo app](https://github.com/paulinevos/toll-troll/tree/main/example) in `example/`: synthetic annotation queues, predictions, reviewer notes, exports, and fixture-backed tuning advice, with no API keys or live inference. It is local-only and excluded from release archives along with tests and development tooling. Clone the repository to run it; the package's copyable `examples/`, documentation, and runtime assets remain in releases.
+### Benchmark your policies
+
+`php artisan toll-troll:benchmark` evaluates isolated policies against labeled JSONL records. Compare models, 
+original/repeated/paraphrased sample weights, and pass/fail thresholds. Save the judgments, then replay them to compare 
+weights and thresholds without further inference calls.
+
+Want to click around first? The repository includes a [seeded Laravel demo app](https://github.com/paulinevos/toll-troll/tree/main/example) in `example/`: synthetic annotation queues, predictions, reviewer notes, exports, and fixture-backed tuning advice, with no API keys or live inference. It is local-only and excluded from release archives along with tests and development tooling. Clone the repository to run it.
 
 ## 🧌 Built-in policies
 
 All methods below are on `Vos\TollTroll\Policy`. You can combine them with your own policies.
 
-| Policy | What it checks |
-| --- | --- |
-| `noPromptInjection()` | Looks for attempts to override the target agent's trusted instructions, impersonate authority, influence evaluation, or induce unauthorized actions/disclosure. Added automatically unless `injection_guard.enabled` is false. A legitimate request within the target agent's scope is not an injection. |
-| `bugReport()` | Whether the context reports existing behavior believed to be incorrect. It may also contain a feature request. |
-| `expectedAndActualBehavior()` | Whether both expected and observed behavior are explicitly described well enough to compare, without inventing expectations. |
-| `reproductionSteps()` | Whether steps or an executable reproduction, inputs, and relevant environment/preconditions are sufficient to **attempt** reproduction. It does not reproduce the bug or prove that it can be fixed. |
-| `featureRequest()` | Whether the context requests new or changed functionality. It may also report a bug. |
-
-Effort and value are application-specific, so define their rubrics as custom policies rather than relying on built-in assumptions.
+| Policy | What it checks                                                                                                                                                                                                                                                                                                                                                             |
+| --- |----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `noPromptInjection()` | Looks for attempts to override the target agent's trusted instructions, impersonate authority, influence evaluation, or induce unauthorized actions/disclosure. Added automatically unless `injection_guard.enabled` is false. A legitimate request within the target agent's scope is not an injection.                                                                   |
+| `bugReport()` | Whether the context reports existing behavior believed to be incorrect. It may also contain a feature request.                                                                                                                                                                                                                                                             |
+| `expectedAndActualBehavior()` | Whether both expected and observed behavior are explicitly described well enough to compare. Lists missing information rather than inventing expectations.                                                                                                                                                                                                                 |
+| `reproductionSteps()` | Whether steps or an executable reproduction, inputs, and relevant environment/preconditions are sufficient to **attempt** reproduction. It does not reproduce the bug or prove that it can be fixed. One way to do that is to trigger an agent to reproduce the issue after passing this policy, and then pipe the result of that into another, nested policy of your own. |
+| `featureRequest()` | Whether the context requests new or changed functionality. It may also report a bug.                                                                                                                                                                                                                                                                                       |
 
 ## 🧌 Configuration
 
@@ -193,7 +195,7 @@ php artisan vendor:publish --tag=toll-troll-config
 
 ### Evaluation settings
 
-These application-wide defaults live in `config/toll-troll.php`. A bridge's `EvaluationConfig` can override them without changing shared configuration:
+These application-wide defaults live in `config/toll-troll.php`. Per-evaluation objects and policy attributes can override them without changing shared configuration:
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -217,13 +219,7 @@ Paraphrases can expose instruction attempts hidden by carefully crafted wording,
 
 ### Automatic batching
 
-TollTroll collects policy questions automatically, including the injection guard and speculative branch questions, then applies guard and branch prerequisites to their answers in PHP. A skipped policy retains no assessments and cannot authorize an action, even if its answer was computed. No answer is fed into another question. If a later step needs newly acquired context or earlier answers, cross a separate bridge with that new input.
-
-Questions sharing exactly the same reference data share a request; different reference sets stay in separate requests so business policies never receive each other's documents. The automatic injection guard still sees all references and may therefore need its own batch. Batches contain at most 400 questions, conservatively accommodating the native providers' limits. There is no public grouping API.
-
-With no references and at most 400 policies, zero variants means **one classification call**, including guards. Three variants means **three rewrite calls plus four classification calls**, not one call per policy. Requests are synchronous and sequential; questions within a native request are evaluated by the provider. Separate reference sets or larger policy lists add batches. Speculative questions can cost money even when logically skipped. Set application-level input limits, rate limits, and cost budgets; SDK retries may add HTTP requests.
-
-`Evaluation::classificationCalls` records each batch's sample, actual provider/model, usage, and any request error once, including batches whose answers are discarded. Batched assessments do not repeat shared token usage; low-level single-policy `assess()` still retains its own request usage.
+Questions sharing exactly the same reference data share a request; different reference sets stay in separate requests so business policies never receive each other's documents. Batches contain at most 400 questions, conservatively accommodating the native providers' limits. 
 
 ### Bridge-level overrides
 
@@ -243,11 +239,11 @@ $result = $tollTroll->evaluate($context, [
 
 The classifier and timeout apply to **every guard and branch policy** in that bridge. Policy classes define criteria, references, and thresholds, not inference settings. There are no per-policy classifier overrides or configuration attributes. Settings are validated before any inference; the config file and supplied objects are never mutated.
 
-Null config-object fields mean **inherit**. A supplied `classifier` pair replaces the global pair completely; include both `provider` and `model`. Null entries explicitly select SDK defaults. `false` and `0` are explicit values, so `new EvaluationConfig(injectionGuard: false, variants: 0)` disables those features for that run.
+Each classifier setting resolves independently, highest priority first: **`policies[id]` → evaluation `classification` → class attribute → config-file default**. `policies` is keyed by policy identifier and applies to every occurrence of that ID across branches and guards; unknown IDs are rejected. Use `no_prompt_injection` to configure the automatic guard's classifiers when enabled. Settings are validated and frozen before any inference, even for policies that may later be skipped. The config file and supplied objects are never mutated.
 
-Shared paraphrases and screening use `variants`, `paraphrasers`, `paraphraseTimeout`, `injectionGuard`, `injectionPassThreshold`, and `injectionFailThreshold`. These inherit their config-file defaults when omitted; `classificationTimeout` and `paraphraseTimeout` independently inherit the file's `timeout`. Paraphraser lists replace inherited lists, and may be empty only with zero variants.
+Null config-object fields mean **inherit**. Engine lists replace inherited lists completely, not append or merge by position. Explicit `provider: null` / `model: null` entries select SDK defaults, overriding an attributed provider/model; include both keys in each engine entry. An empty classifier list is invalid. `false` and `0` are explicit values, so `new EvaluationConfig(injectionGuard: false, variants: 0)` disables those features for that run.
 
-**Migration:** replace `classifiers: [[...]]` with `classifier: [...]` in published config; replace `classification: new PolicyConfig(...)` with `classifier: [...]` / `classificationTimeout: ...` on `EvaluationConfig`. Remove policy attributes and `policies` overrides. To compare models, use the benchmark's named `models` matrix rather than a production ensemble.
+Only `EvaluationConfig` controls shared paraphrases and automatic screening: `variants`, `paraphrasers`, `paraphraseTimeout`, `injectionGuard`, `injectionPassThreshold`, and `injectionFailThreshold`. These inherit the corresponding config-file settings when omitted. `paraphraseTimeout` inherits the file's `timeout`, independently of classification timeouts. An empty `paraphrasers` list is allowed only with zero variants. Attributes cannot disable injection screening or change sample generation. Policy criteria, references, and pass/fail thresholds remain on the policy value object.
 
 Benchmark suites default to the global classifier and accept explicit `models` / `timeout`; see [benchmark configuration](docs/benchmarking.md#collect-once-compare-many-ways). Low-level `assess()` and `paraphrase()` retain their explicit provider/model/timeout arguments and SDK defaults; they do not apply bridge overrides.
 
