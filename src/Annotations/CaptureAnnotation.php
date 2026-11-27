@@ -40,7 +40,7 @@ class CaptureAnnotation
         }
         $fingerprint = hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR));
 
-        $case = Annotation::firstOrCreate(['fingerprint' => $fingerprint], [
+        $case = app(Annotation::class)->firstOrCreate(['fingerprint' => $fingerprint], [
             'dataset' => $event->dataset, 'sample_key' => $event->key,
             'context' => (array) $event->context, 'policy' => $policy, 'policy_hash' => $policyHash,
             'prediction' => $prediction,

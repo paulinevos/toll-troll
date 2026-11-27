@@ -17,6 +17,8 @@ class Annotation extends Model
 
     protected $guarded = [];
 
+    protected $attributes = ['version' => 0, 'label' => null, 'note' => null, 'prediction' => null, 'reviewed_at' => null];
+
     public static function policySnapshot(Policy $policy): array
     {
         $snapshot = (array) $policy;
@@ -33,7 +35,7 @@ class Annotation extends Model
         $days = config('toll-troll-annotations.retention_days');
 
         if ($days === null) {
-            return static::query()->whereRaw('1 = 0');
+            return static::query()->whereIn('id', []);
         }
 
         if (! is_int($days) || $days < 1) {

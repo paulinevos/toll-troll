@@ -158,6 +158,8 @@ Dispatch `EvaluationReviewRequested` with a completed evaluation to review the p
 This will publish the evaluation to a dashboard where reviewers can label the results as correct or 
 incorrect (known as **annotation**). Use `AnnotationRequested` instead for blind labeling without predictions.
 
+The dashboard supports SQL databases and [MongoDB](docs/annotations.md#mongodb) through the optional `mongodb/laravel-mongodb` package.
+
 Annotating the results helps establish **ground truth** for benchmarks. Establishing a ground truth allows you to tell 
 the benchmark command what you define as correct or incorrect. This allows you to fine-tune policies for your specific use cases.
 

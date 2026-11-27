@@ -3,6 +3,7 @@
 namespace Vos\TollTroll\Annotations;
 
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 
@@ -29,25 +30,29 @@ class AnnotationController
     public function show(Request $request, string $dataset, ?string $id = null)
     {
         $this->authorize($request, $dataset);
-        $selected = $id === null ? null : Annotation::where('dataset', $dataset)->findOrFail($id);
-        $page = null;
+        $query = app(Annotation::class)->where('dataset', $dataset);
+        $selected = $id === null ? null : (clone $query)->findOrFail($id);
+        $pending = (clone $query)->whereNull('label')->count();
+        $page = LengthAwarePaginator::resolveCurrentPage();
         if ($selected) {
             // Locate the case in the pending-first queue, including after a save moves it.
-            $rank = $selected->label === null ? 0 : 1;
-            $before = Annotation::where('dataset', $dataset)->where(function ($query) use ($selected, $rank) {
-                $query->whereRaw('CASE WHEN label IS NULL THEN 0 ELSE 1 END < ?', [$rank])
-                    ->orWhere(function ($query) use ($selected, $rank) {
-                        $query->whereRaw('CASE WHEN label IS NULL THEN 0 ELSE 1 END = ?', [$rank])
-                            ->where(function ($query) use ($selected) {
-                                $query->where('created_at', '<', $selected->created_at)
-                                    ->orWhere(fn ($query) => $query->where('created_at', $selected->created_at)->where('id', '<', $selected->id));
-                            });
-                    });
-            })->count();
+            $before = (clone $query)->when($selected->label === null,
+                fn ($query) => $query->whereNull('label'), fn ($query) => $query->whereNotNull('label'))
+                ->where(function ($query) use ($selected) {
+                    $query->where('created_at', '<', $selected->created_at)
+                        ->orWhere(fn ($query) => $query->where('created_at', $selected->created_at)->where('id', '<', $selected->id));
+                })->count();
+            $before += $selected->label === null ? 0 : $pending;
             $page = intdiv($before, 15) + 1;
         }
-        $cases = Annotation::where('dataset', $dataset)->orderByRaw('CASE WHEN label IS NULL THEN 0 ELSE 1 END')->orderBy('created_at')->orderBy('id')
-            ->paginate(15, ['*'], 'page', $page)->withPath(route('toll-troll-annotations.show', $dataset));
+        // Slice the two queue segments separately, without SQL expressions or loading the full dataset.
+        $offset = ($page - 1) * 15;
+        $ordered = (clone $query)->orderBy('created_at')->orderBy('id');
+        $items = $offset < $pending ? (clone $ordered)->whereNull('label')->offset($offset)->limit(15)->get() : collect();
+        if ($items->count() < 15) {
+            $items = $items->concat((clone $ordered)->whereNotNull('label')->offset(max(0, $offset - $pending))->limit(15 - $items->count())->get());
+        }
+        $cases = new LengthAwarePaginator($items, (clone $query)->count(), 15, $page, ['path' => route('toll-troll-annotations.show', $dataset)]);
         $selected ??= $request->query('edge') === 'last' ? $cases->last() : $cases->first();
         $previousUrl = $nextUrl = null;
         if ($selected) {
@@ -59,14 +64,13 @@ class AnnotationController
                 ? route('toll-troll-annotations.show', [$dataset, $cases[$position + 1]->id])
                 : ($cases->hasMorePages() ? route('toll-troll-annotations.show', [$dataset, 'page' => $cases->currentPage() + 1]) : null);
         }
-        $pending = Annotation::where('dataset', $dataset)->whereNull('label')->count();
 
         return $this->view($request, compact('dataset', 'cases', 'selected', 'pending', 'previousUrl', 'nextUrl'));
     }
 
     private function view(Request $request, array $data)
     {
-        $bridges = Annotation::query()->distinct()->orderBy('dataset')->pluck('dataset')
+        $bridges = app(Annotation::class)->newQuery()->groupBy('dataset')->orderBy('dataset')->pluck('dataset')
             ->filter(fn ($name) => Gate::forUser($request->user())->allows('review-toll-troll-annotations', [$name]));
         $advice = (isset($data['dataset']) ? collect([$data['dataset']]) : $bridges)
             ->flatMap(fn ($name) => app(AnalyzeAnnotations::class)->advice($name, (string) $request->user()->getAuthIdentifier()))->values();
@@ -84,11 +88,11 @@ class AnnotationController
         $input = $request->validate(['label' => ['required', 'in:pass,fail,unknown'], 'note' => ['nullable', 'string', 'max:2000'], 'version' => ['required', 'integer', 'min:0']]);
 
         DB::transaction(function () use ($request, $dataset, $id, $input) {
-            $case = Annotation::where('dataset', $dataset)->findOrFail($id);
+            $case = app(Annotation::class)->where('dataset', $dataset)->findOrFail($id);
             $case->fill(['label' => $input['label'], 'note' => $input['note'] ?? null, 'reviewer_id' => (string) $request->user()->getAuthIdentifier(),
                 'version' => (int) $input['version'] + 1, 'reviewed_at' => now()]);
             // getDirty() supplies encrypted database values; the conditional update prevents lost reviews.
-            $changed = Annotation::whereKey($id)->where('version', $input['version'])->update($case->getDirty());
+            $changed = app(Annotation::class)->whereKey($id)->where('version', $input['version'])->update($case->getDirty());
             abort_unless($changed === 1, 409, 'Another reviewer saved this case. Reload before labeling it.');
             DB::table('toll_troll_annotation_reviews')->insert([
                 'annotation_id' => $id, 'version' => $case->version, 'label' => $case->label,
@@ -103,12 +107,12 @@ class AnnotationController
     {
         $this->authorize($request, $dataset);
         abort_unless(config('toll-troll-annotations.analysis.enabled'), 404);
-        $analysis = AnnotationAnalysis::where('dataset', $dataset)->findOrFail($analysisId);
+        $analysis = app(AnnotationAnalysis::class)->where('dataset', $dataset)->findOrFail($analysisId);
         abort_unless(collect($analysis->suggestions)->contains(fn ($suggestion) => AnnotationAnalysis::suggestionKey($suggestion) === $suggestionKey), 404);
 
-        DB::table('toll_troll_annotation_advice_dismissals')->insertOrIgnore([
+        DB::table('toll_troll_annotation_advice_dismissals')->upsert([
             'analysis_id' => $analysis->id, 'reviewer_id' => (string) $request->user()->getAuthIdentifier(), 'suggestion_key' => $suggestionKey,
-        ]);
+        ], ['analysis_id', 'reviewer_id', 'suggestion_key'], ['suggestion_key']);
 
         return ($request->boolean('dashboard')
             ? redirect()->route('toll-troll-annotations.index')
@@ -119,8 +123,8 @@ class AnnotationController
     {
         $this->authorize($request, $dataset);
         abort_unless(preg_match('/\A[a-f0-9]{64}\z/', $hash), 404);
-        $query = Annotation::where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label');
-        abort_unless($query->exists(), 404);
+        $query = app(Annotation::class)->where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label');
+        abort_unless((clone $query)->exists(), 404);
 
         return response()->streamDownload(function () use ($query) {
             foreach ($query->orderBy('id')->cursor() as $case) {

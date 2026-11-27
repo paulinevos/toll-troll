@@ -25,7 +25,7 @@ class AnalyzeAnnotations
         ])->validate();
 
         // Catch up captures made before advice was enabled, newest revision per policy.
-        $policies = Annotation::where('dataset', $dataset)->orderByDesc('created_at')->orderByDesc('id')->get(['policy', 'policy_hash'])
+        $policies = app(Annotation::class)->where('dataset', $dataset)->orderByDesc('created_at')->orderByDesc('id')->get(['policy', 'policy_hash'])
             ->unique(fn ($case) => $case->policy['id']);
         foreach ($policies as $case) {
             $this->recordRevision($dataset, $case->policy['id'], $case->policy_hash);
@@ -33,12 +33,12 @@ class AnalyzeAnnotations
 
         foreach (DB::table('toll_troll_annotation_policy_revisions')->where('dataset', $dataset)->whereNull('retired_at')->pluck('policy_hash') as $hash) {
             $fingerprint = $this->fingerprint($dataset, $hash);
-            if (AnnotationAnalysis::where('dataset', $dataset)->where('policy_hash', $hash)->where('fingerprint', $fingerprint)->exists()) {
+            if (app(AnnotationAnalysis::class)->where('dataset', $dataset)->where('policy_hash', $hash)->where('fingerprint', $fingerprint)->exists()) {
                 continue;
             }
 
             // Repeated evaluations/branches of one context are not independent evidence.
-            $cases = Annotation::where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label')
+            $cases = app(Annotation::class)->where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label')
                 ->whereNotNull('prediction')->orderByDesc('reviewed_at')->orderByDesc('id')->get()
                 ->filter(fn ($case) => in_array($case->prediction['verdict'] ?? null, ['pass', 'fail', 'unknown'], true))
                 ->groupBy(fn ($case) => hash('sha256', json_encode($case->context, JSON_THROW_ON_ERROR)))
@@ -75,7 +75,7 @@ class AnalyzeAnnotations
             }));
 
             // Save the input signature, not a newer signature if reviews changed during inference.
-            AnnotationAnalysis::updateOrCreate(['dataset' => $dataset, 'policy_hash' => $hash], [
+            app(AnnotationAnalysis::class)->updateOrCreate(['dataset' => $dataset, 'policy_hash' => $hash], [
                 'fingerprint' => $fingerprint, 'reviewed_count' => $cases->count(),
                 'disagreement_count' => $disagreements->count(), 'suggestions' => $suggestions,
             ]);
@@ -92,7 +92,7 @@ class AnalyzeAnnotations
 
     public function recordRevision(string $dataset, string $policyId, string $hash, bool $deployed = false): void
     {
-        DB::transaction(function () use ($dataset, $policyId, $hash, $deployed) {
+        $record = function () use ($dataset, $policyId, $hash, $deployed) {
             $revisions = DB::table('toll_troll_annotation_policy_revisions')->where('dataset', $dataset)->where('policy_key', hash('sha256', $policyId));
             $known = (clone $revisions)->lockForUpdate()->get();
             // Late captures cannot reactivate retired revisions or override an explicit deployment.
@@ -105,7 +105,10 @@ class AnalyzeAnnotations
                 ['dataset' => $dataset, 'policy_hash' => $hash],
                 ['policy_key' => hash('sha256', $policyId), 'retired_at' => null, 'deployment_tracked' => $deployed],
             );
-        });
+        };
+
+        // Evaluation capture already owns a transaction; MongoDB cannot nest one.
+        DB::transactionLevel() > 0 ? $record() : DB::transaction($record);
     }
 
     public function advice(string $dataset, string $reviewerId): Collection
@@ -114,20 +117,20 @@ class AnalyzeAnnotations
             return collect();
         }
 
-        $analyses = AnnotationAnalysis::where('dataset', $dataset)->whereIn('policy_hash',
-            DB::table('toll_troll_annotation_policy_revisions')->where('dataset', $dataset)->whereNull('retired_at')->select('policy_hash'))
+        $analyses = app(AnnotationAnalysis::class)->where('dataset', $dataset)->whereIn('policy_hash',
+            DB::table('toll_troll_annotation_policy_revisions')->where('dataset', $dataset)->whereNull('retired_at')->pluck('policy_hash')->all())
             ->orderBy('id')->get()->filter(fn ($analysis) => $analysis->suggestions !== [] && $analysis->fingerprint === $this->fingerprint($dataset, $analysis->policy_hash));
         $dismissals = DB::table('toll_troll_annotation_advice_dismissals')->where('reviewer_id', $reviewerId)->whereIn('analysis_id', $analyses->modelKeys())->get();
 
         return $analyses->flatMap(fn ($analysis) => collect($analysis->suggestions)->map(fn ($suggestion) => [
             'analysis' => $analysis, 'suggestion' => $suggestion, 'key' => AnnotationAnalysis::suggestionKey($suggestion),
-        ])->reject(fn ($card) => $dismissals->contains(fn ($dismissal) => (int) $dismissal->analysis_id === $analysis->id && $dismissal->suggestion_key === $card['key'])))->values();
+        ])->reject(fn ($card) => $dismissals->contains(fn ($dismissal) => (string) $dismissal->analysis_id === (string) $analysis->id && $dismissal->suggestion_key === $card['key'])))->values();
     }
 
     private function fingerprint(string $dataset, string $hash): string
     {
         return hash('sha256', json_encode([
-            Annotation::where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label')->orderBy('id')->pluck('version', 'id')->all(),
+            app(Annotation::class)->where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label')->orderBy('id')->pluck('version', 'id')->all(),
             config('toll-troll-annotations.analysis'), config('ai.default'),
         ], JSON_THROW_ON_ERROR));
     }
