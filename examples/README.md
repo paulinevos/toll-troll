@@ -62,7 +62,7 @@ If triage evaluation passes, the `StartFixAgent` job is queued.
 
 ## Review notification
 
-`review-notification.php` returns a registration function accepting an application-chosen notifiable reviewer. Register it once in your service provider, then use `$tollTroll->dispatch()`; a blocked or uncertain evaluation emits `ReviewRequired` and queues a standard Laravel mail notification. No raw context, generated rationale, or evidence is included in email. Persist the evaluation in your application so the reviewer can look it up securely by ID.
+`review-notification.php` returns a registration function accepting an application-chosen notifiable reviewer. Register it once in your service provider, then use `$tollTroll->dispatch()`. A blocked guard, rewrite failure, or uncertain/errored branch emits `ReviewRequired` and queues a Laravel mail notification. An ordinary failed branch alone does not request review. The email contains only the evaluation ID; persist the evaluation privately so the reviewer can look it up.
 
 ## 🧌 Human tool approval
 
