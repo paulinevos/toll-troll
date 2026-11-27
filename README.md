@@ -28,10 +28,16 @@ Laravel discovers the service provider automatically. Configure providers and cr
 
 A **bridge** describes one input entrypoint: its trusted agent instructions and the policy branches that incoming text must satisfy.
 
-For example, this bridge assesses incoming feature requests. It notifies the product team when the requested work looks low effort to implement and has high business value. The two custom policy classes are defined [below](#custom-policies).
+For example, this bridge assesses incoming feature requests with high business value:
+
+- **Low effort:** start an implementation agent and notify the product team.
+- **High effort:** notify the product team without starting implementation.
+
+The two custom policy classes are defined [below](#custom-policies).
 
 ```php
 use App\Jobs\NotifyProductTeam;
+use App\Jobs\StartImplementationAgent;
 use App\Policies\HighBusinessValue;
 use App\Policies\LowEffort;
 use Vos\TollTroll\Bridge;
@@ -43,9 +49,10 @@ $troll = app(TollTroll::class);
 
 $bridge = new Bridge(
     name: 'product-feedback',
-    instructions: 'Triage product feedback. Do not implement changes.',
+    instructions: 'Notify the product team about high-value feature requests. Start implementation only for low-effort, high-value feature requests.',
     branches: [
-        'notify' => [Policy::featureRequest(), new LowEffort, new HighBusinessValue],
+        'notify' => [Policy::featureRequest(), new HighBusinessValue],
+        'implement' => [Policy::featureRequest(), new HighBusinessValue, new LowEffort],
     ],
 );
 
@@ -53,23 +60,24 @@ $result = $troll->cross($bridge, [
     'conversation' => $transcript,
 ]);
 
-if ($result->allows('notify')) {
+if ($result->allows('implement')) {
     // The request passed every guard and all three policies.
 }
 
 // Optional: queue your application's jobs for passing branches.
 $troll->dispatch($result, [
     'notify' => fn (Evaluation $evaluation) => new NotifyProductTeam($evaluation),
+    'implement' => fn (Evaluation $evaluation) => new StartImplementationAgent($evaluation),
 ]);
 ```
 
-`$transcript` is your input text. `NotifyProductTeam` is an application-owned job implementing Laravel's `ShouldQueue`. The effort and value criteria are examples; replace them with what matters to your team.
+`$transcript` is your input text. `NotifyProductTeam` and `StartImplementationAgent` are application-owned jobs implementing Laravel's `ShouldQueue`. Notification does not depend on effort; only implementation does. The effort and value criteria are examples; replace them with what matters to your team.
 
 - Automatic **prompt-injection screening** must pass for any branch to proceed.
 - Each branch requires all its policies to pass, in order. A non-pass skips dependent policies. You can add independent branches—for example, to route bug reports separately—and more than one branch can pass.
 - `cross()` evaluates only. `dispatch()` queues mapped jobs and emits `Vos\TollTroll\Events\ReviewRequired` if guards block the run or a branch is uncertain or errored. An ordinary failed branch alone does not request review.
 
-Use trusted instructions matching the agent that will act on the result. Sources are untrusted text with nonempty names and values. Choose a distinct bridge name for each entrypoint (1–64 letters, digits, underscores, or hyphens).
+`instructions` describes the downstream workflow's authorized scope for prompt-injection screening; it is not a task for the classifier to execute. Sources are untrusted text with nonempty names and values. Choose a distinct bridge name for each entrypoint (1–64 letters, digits, underscores, or hyphens).
 
 ## Custom policies
 
@@ -136,8 +144,11 @@ For a one-off policy, you can also pass an ID and criteria directly to `new Poli
 ```php
 $bridge = new Bridge(
     name: 'product-feedback',
-    instructions: 'Triage product feedback. Do not implement changes.',
-    branches: ['notify' => [Policy::featureRequest(), new LowEffort, new HighBusinessValue]],
+    instructions: 'Notify the product team about high-value feature requests. Start implementation only for low-effort, high-value feature requests.',
+    branches: [
+        'notify' => [Policy::featureRequest(), new HighBusinessValue],
+        'implement' => [Policy::featureRequest(), new HighBusinessValue, new LowEffort],
+    ],
     guards: [new Policy('no_personal_data', 'Pass when the text contains no personal contact details. Fail when it includes an email address or phone number.')],
 );
 ```
