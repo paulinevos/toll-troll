@@ -51,6 +51,7 @@ $bridge = new Bridge(
     name: 'product-feedback',
     instructions: 'Notify the product team about high-value feature requests. Start implementation only for low-effort, high-value feature requests.',
     branches: [
+        // Branches are independent: notify ignores effort, so both can pass.
         'notify' => [Policy::featureRequest(), new HighBusinessValue],
         'implement' => [Policy::featureRequest(), new HighBusinessValue, new LowEffort],
     ],
@@ -64,7 +65,7 @@ if ($result->allows('implement')) {
     // The request passed every guard and all three policies.
 }
 
-// Optional: queue your application's jobs for passing branches.
+// Optional: queue your application's jobs. If both branches pass, both jobs are queued.
 $troll->dispatch($result, [
     'notify' => fn (Evaluation $evaluation) => new NotifyProductTeam($evaluation),
     'implement' => fn (Evaluation $evaluation) => new StartImplementationAgent($evaluation),
