@@ -22,7 +22,8 @@
         "illuminate/database": "Laravel 12/13 database support for the opt-in annotation module.",
         "illuminate/encryption": "Laravel 12/13 encryption support for private annotation snapshots.",
         "illuminate/routing": "Laravel 12/13 routing support for the opt-in annotation UI.",
-        "illuminate/view": "Laravel 12/13 Blade support for the opt-in annotation UI."
+        "illuminate/view": "Laravel 12/13 Blade support for the opt-in annotation UI.",
+        "mongodb/laravel-mongodb": "MongoDB storage for the opt-in annotation dashboard (requires ^5.12)."
     },
     "autoload": {
         "psr-4": { "Vos\\TollTroll\\": "src/" }

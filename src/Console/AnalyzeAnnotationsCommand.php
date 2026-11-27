@@ -22,7 +22,7 @@ class AnalyzeAnnotationsCommand extends Command
         }
 
         $datasets = $this->argument('dataset') !== null ? [$this->argument('dataset')]
-            : Annotation::query()->distinct()->pluck('dataset');
+            : app(Annotation::class)->newQuery()->groupBy('dataset')->pluck('dataset');
         $status = self::SUCCESS;
         foreach ($datasets as $dataset) {
             try {

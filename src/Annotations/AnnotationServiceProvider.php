@@ -13,6 +13,10 @@ class AnnotationServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../../config/toll-troll-annotations.php', 'toll-troll-annotations');
+
+        foreach ([Annotation::class => MongoDB\Annotation::class, AnnotationAnalysis::class => MongoDB\AnnotationAnalysis::class] as $model => $document) {
+            $this->app->bind($model, fn ($app) => new ($app['db']->connection()->getDriverName() === 'mongodb' ? $document : $model));
+        }
     }
 
     public function boot(): void
@@ -31,7 +35,8 @@ class AnnotationServiceProvider extends ServiceProvider
             $view->with('bodyFontDataUri', 'data:font/woff2;base64,'.base64_encode(file_get_contents(__DIR__.'/../../resources/fonts/source-sans-3-variable.woff2')));
         });
         $this->publishes([__DIR__.'/../../config/toll-troll-annotations.php' => config_path('toll-troll-annotations.php')], 'toll-troll-annotations-config');
-        $this->publishesMigrations([__DIR__.'/../../database/migrations' => database_path('migrations')], 'toll-troll-annotations-migrations');
+        $migrations = $this->app['db']->connection()->getDriverName() === 'mongodb' ? 'mongodb-migrations' : 'migrations';
+        $this->publishesMigrations([__DIR__.'/../../database/'.$migrations => database_path('migrations')], 'toll-troll-annotations-migrations');
 
         if (! $this->app->routesAreCached()) {
             Route::prefix(config('toll-troll-annotations.path'))->middleware(config('toll-troll-annotations.middleware'))->name('toll-troll-annotations.')->group(function () {

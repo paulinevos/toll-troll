@@ -35,6 +35,22 @@ Gate::define('review-toll-troll-annotations', function ($user, string $dataset):
 
 The same ability controls viewing, labeling, and export. Index pages and the switcher list only authorized bridge names; every case lookup is scoped to its bridge. For multiple tenants, choose distinct names per tenant and entrypoint and authorize membership; this package does not infer tenancy. Existing application permission methods such as `canReviewAnnotationDataset()` can stay unchanged.
 
+### MongoDB
+
+The dashboard also supports MongoDB through the optional official Laravel integration:
+
+```sh
+composer require mongodb/laravel-mongodb:^5.12
+```
+
+Configure a MongoDB connection following [MongoDB's Laravel connection guide](https://www.mongodb.com/docs/drivers/php/laravel-mongodb/current/connect/connect-to-mongodb/) and select it as your application's default database connection **before publishing migrations**. The annotation provider automatically selects MongoDB models and publishes a collection/index migration under the same `toll-troll-annotations-migrations` tag. Do not apply the SQL annotation migrations to MongoDB. SQL remains supported without installing this package.
+
+Use a **replica set or sharded cluster**, not a standalone MongoDB server: evaluation capture, review/history writes, revision tracking, and cascading deletion use transactions. Context, policy snapshots, predictions, notes, and advice retain their Laravel encryption casts. Capture events, authorization, review URLs, and JSONL exports are unchanged. This does not migrate existing SQL annotations into MongoDB.
+
+For application-owned queries that work with either backend, resolve `app(Annotation::class)` or `app(AnnotationAnalysis::class)` from the container, then call `newQuery()` or `where(...)`. Their base classes remain SQL models; the provider binds MongoDB subclasses when the default connection uses the `mongodb` driver. For static queries or `model:prune` on MongoDB, use `Vos\TollTroll\Annotations\MongoDB\Annotation` and `Vos\TollTroll\Annotations\MongoDB\AnnotationAnalysis`. MongoDB model/query deletion also removes associated review history or advice dismissals transactionally; raw collection deletion bypasses that cleanup.
+
+To run the optional MongoDB integration tests, install the suggested package in the development checkout and set `MONGODB_URI` to a disposable test replica set. Run `vendor/bin/phpunit --filter MongoDBAnnotationsTest`. The tests create and drop a dedicated `toll_troll_test_<process-id>` database; they skip when the package or URI is absent.
+
 ## Submit deliberate snapshots
 
 Dispatch from trusted application code after redacting data you should not retain:
@@ -141,7 +157,7 @@ event(new PolicyDeployed('support', $deployedPolicy));
 
 After the first explicit deployment for a dataset/policy ID, only further `PolicyDeployed` events change its active revision; captures cannot override it. Dispatch the event for rollbacks too, and for every affected dataset. Keep stable IDs for the same gate and distinct IDs for independent gates. A revision is the exact policy snapshot, not a Git commit, a model change, or an application release number. Analysis must be enabled when the event is dispatched. Historical analyses remain stored but hidden, including any analysis that completes after its policy was retired.
 
-Suggestions are encrypted in `toll_troll_annotation_analyses`, but may summarize private source content. They have their own lifetime: when pruning or deleting source records, also delete analyses for each affected dataset with `AnnotationAnalysis::where('dataset', $dataset)->delete()` (import `Vos\TollTroll\Annotations\AnnotationAnalysis`). Even a stale, hidden analysis must be removed for data deletion. Disabling analysis hides notices and stops calls but does not delete saved analyses. Include these summaries in application-owned retention, account deletion, backups, and key rotation.
+Suggestions are encrypted in `toll_troll_annotation_analyses`, but may summarize private source content. They have their own lifetime: when pruning or deleting source records, also delete analyses for each affected dataset with `app(AnnotationAnalysis::class)->where('dataset', $dataset)->delete()` (import `Vos\TollTroll\Annotations\AnnotationAnalysis`). Even a stale, hidden analysis must be removed for data deletion. Disabling analysis hides notices and stops calls but does not delete saved analyses. Include these summaries in application-owned retention, account deletion, backups, and key rotation.
 
 Reviewer IDs and suggestion hashes are stored in `toll_troll_annotation_advice_dismissals`; deleting an analysis cascades to its dismissals. The revision ledger in `toll_troll_annotation_policy_revisions` contains dataset names, hashed policy IDs, snapshot hashes, and retirement/deployment state, not source text. Delete its rows explicitly on dataset/account deletion. Preserve the ledger during ordinary case pruning so historical advice cannot reappear.
 
@@ -193,7 +209,7 @@ use Vos\TollTroll\Annotations\Annotation;
 Schedule::command('model:prune', ['--model' => [Annotation::class]])->daily();
 ```
 
-Pass `--model` explicitly: Laravel's default discovery scans application models, not this package. Deletion is permanent and bulk-based; it does not decrypt snapshots or fire individual `pruning`, `deleting`, or `deleted` hooks. The database cascades deletion to review history; keep foreign key enforcement enabled, including SQLite's `foreign_key_constraints` setting. For per-bridge retention or other criteria, use an application-owned cleanup job with an appropriately scoped Eloquent query instead of this global retention setting.
+Pass `--model` explicitly: Laravel's default discovery scans application models, not this package. On MongoDB, substitute `Vos\TollTroll\Annotations\MongoDB\Annotation` in both examples above. Deletion is permanent and bulk-based; it does not decrypt snapshots or fire individual `pruning`, `deleting`, or `deleted` hooks. SQL databases cascade deletion to review history; keep foreign key enforcement enabled, including SQLite's `foreign_key_constraints` setting. The MongoDB model performs this cleanup in a transaction. For per-bridge retention or other criteria, use an application-owned cleanup job with an appropriately scoped Eloquent query instead of this global retention setting.
 
 ### Account deletion
 
@@ -202,7 +218,7 @@ TollTroll has no account ownership model. Keep an application-owned mapping from
 ```php
 use Vos\TollTroll\Annotations\Annotation;
 
-Annotation::where('dataset', $bridgeName)
+app(Annotation::class)->where('dataset', $bridgeName)
     ->whereIn('sample_key', $annotationKeysForAccount)
     ->delete();
 ```
