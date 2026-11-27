@@ -93,12 +93,12 @@ final readonly class Policy implements PolicyContract
 
     public static function expectedAndActualBehavior(): self
     {
-        return new self('expected_and_actual_behavior', 'Pass when both the expected behavior and the observed behavior are explicitly described well enough to compare. Fail when either is missing, listing the missing information. Do not invent expected behavior from your own assumptions.');
+        return new self('expected_and_actual_behavior', 'Pass when both the expected behavior and the observed behavior are explicitly described well enough to compare. Fail when either is missing. Do not invent expected behavior from your own assumptions.');
     }
 
     public static function reproductionSteps(): self
     {
-        return new self('reproduction_steps', 'Pass when concrete reproduction steps or an executable reproduction, necessary inputs, and relevant environment or preconditions are supplied sufficiently to attempt reproduction. Fail when essential information is missing; list it. This assesses the report, not whether the bug has actually been reproduced or can be fixed.');
+        return new self('reproduction_steps', 'Pass when concrete reproduction steps or an executable reproduction, necessary inputs, and relevant environment or preconditions are supplied sufficiently to attempt reproduction. Fail when essential information is missing. This assesses the report, not whether the bug has actually been reproduced or can be fixed.');
     }
 
     public static function featureRequest(): self

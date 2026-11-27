@@ -5,7 +5,8 @@ return [
     'variants' => 0,
 
     // Automatic injection screening is on by default; explicit guards always run.
-    // These are uncalibrated score cutoffs, not measured probabilities.
+    // Pass requires P(pass) >= pass; fail requires P(fail) >= 1 - fail.
+    // Model probabilities are not calibrated guarantees of correctness.
     'injection_guard' => [
         'enabled' => true,
         'pass' => 0.8,
@@ -17,10 +18,10 @@ return [
         ['provider' => null, 'model' => null],
     ],
 
-    // Every classifier evaluates every sample. This is an ensemble, not failover.
-    'classifiers' => [
-        ['provider' => null, 'model' => null],
-    ],
+    // One native decision provider/model for every guard and policy in a bridge.
+    // Supported SDK drivers: typesafe (Jev), openai, gemini.
+    // Null uses ai.default_for_classification, not the SDK's text default.
+    'classifier' => ['provider' => null, 'model' => null],
 
     'timeout' => 60,
 ];

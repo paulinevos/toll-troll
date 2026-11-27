@@ -6,11 +6,11 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Validator;
 use InvalidArgumentException;
 use SplFileObject;
-use Vos\TollTroll\Agents\Classifier;
 use Vos\TollTroll\Agents\Paraphraser;
 use Vos\TollTroll\Benchmark;
 use Vos\TollTroll\Context;
 use Vos\TollTroll\Policy;
+use Vos\TollTroll\TollTroll;
 
 class BenchmarkCommand extends Command
 {
@@ -37,7 +37,7 @@ class BenchmarkCommand extends Command
 
         if ($replay) {
             $report = json_decode(file_get_contents($replay), true, flags: JSON_THROW_ON_ERROR);
-            if (($report['format'] ?? null) !== 1 || ($report['complete'] ?? false) !== true || ($report['capture'] ?? null) !== $capture) {
+            if (($report['format'] ?? null) !== 2 || ($report['complete'] ?? false) !== true || ($report['capture'] ?? null) !== $capture) {
                 throw new InvalidArgumentException('Replay needs a complete matching capture. Only profiles and thresholds may change.');
             }
             $this->validateCapture($report, $suite);
@@ -52,8 +52,8 @@ class BenchmarkCommand extends Command
             }
             $calls = count($records) * ($suite['variants'] + count($suite['models']) * (1 + $suite['repeats'] + $suite['variants']));
             $this->info(count($records).' records; '.count($skipped)." skipped; at most {$calls} SDK prompt calls (provider retries may add HTTP requests).");
-            $report = ['format' => 1, 'complete' => false, 'capture' => $capture, 'limits' => $limits,
-                'prompt_sha256' => ['classifier' => hash_file('sha256', (new \ReflectionClass(Classifier::class))->getFileName()),
+            $report = ['format' => 2, 'complete' => false, 'capture' => $capture, 'limits' => $limits,
+                'prompt_sha256' => ['classifier' => hash_file('sha256', (new \ReflectionClass(TollTroll::class))->getFileName()),
                     'paraphraser' => hash_file('sha256', (new \ReflectionClass(Paraphraser::class))->getFileName())],
                 'created_at' => gmdate('c'), 'skipped' => $skipped, 'records' => []];
         }
@@ -163,6 +163,7 @@ class BenchmarkCommand extends Command
             'records.*.models.*.repeated' => ['present', 'array', 'list', 'size:'.$suite['repeats']],
             'records.*.models.*.paraphrased' => ['present', 'array', 'list', 'size:'.$suite['variants']],
             'records.*.models.*.*.*.score' => ['present', 'nullable', 'numeric', 'between:0,1'],
+            'records.*.models.*.*.*.failProbability' => ['present', 'nullable', 'numeric', 'between:0,1'],
             'records.*.models.*.*.*.error' => ['nullable', 'string'],
             'records.*.models.*.*.*.seconds' => ['required', 'numeric', 'min:0'],
             'records.*.models.*.*.*.prompt_calls' => ['required', 'integer', 'between:0,1'],

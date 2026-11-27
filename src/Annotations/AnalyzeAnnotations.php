@@ -55,8 +55,8 @@ class AnalyzeAnnotations
                 'cases' => $cases->map(fn ($case) => ['id' => $case->id, 'context' => $case->context,
                     'expected' => $case->label, 'note' => $case->note, 'prediction' => $case->prediction])->all(),
             ], JSON_THROW_ON_ERROR),
-                provider: $config['provider'] ?? config('toll-troll.classifiers.0.provider'),
-                model: $config['model'] ?? ($config['provider'] === null ? config('toll-troll.classifiers.0.model') : null),
+                provider: $config['provider'],
+                model: $config['model'],
                 timeout: config('toll-troll.timeout', 60));
 
             $data = Validator::make($response->toArray(), [
@@ -128,7 +128,7 @@ class AnalyzeAnnotations
     {
         return hash('sha256', json_encode([
             Annotation::where('dataset', $dataset)->where('policy_hash', $hash)->whereNotNull('label')->orderBy('id')->pluck('version', 'id')->all(),
-            config('toll-troll-annotations.analysis'), config('toll-troll.classifiers.0'),
+            config('toll-troll-annotations.analysis'), config('ai.default'),
         ], JSON_THROW_ON_ERROR));
     }
 }

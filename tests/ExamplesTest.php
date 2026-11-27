@@ -13,9 +13,11 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Ai\AiServiceProvider;
 use Laravel\Ai\Approvals\Decisions;
+use Laravel\Ai\Classification;
+use Laravel\Ai\Prompts\ClassificationPrompt;
+use Laravel\Ai\Responses\Data\ChoiceAnswer;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
-use Vos\TollTroll\Agents\Classifier;
 use Vos\TollTroll\Agents\Paraphraser;
 use Vos\TollTroll\Context;
 use Vos\TollTroll\Evaluation;
@@ -47,7 +49,8 @@ class ExamplesTest extends TestCase
         parent::setUp();
 
         Paraphraser::fake(fn () => ['sources' => [['id' => 'report', 'text' => 'Saving a draft fails.']]]);
-        Classifier::fake(fn () => ['score' => 1, 'reason' => 'Fixture verdict.', 'evidence' => [], 'missing' => []]);
+        Classification::fake(fn (ClassificationPrompt $prompt) => array_fill_keys(array_keys($prompt->questions),
+            new ChoiceAnswer('pass', ['pass' => 0.94, 'fail' => 0.04, 'unknown' => 0.02])))->preventStrayClassifications();
     }
 
     public function test_triage_example_queues_application_job(): void
@@ -97,14 +100,19 @@ class ExamplesTest extends TestCase
         $context = new Context('Investigate bug reports without changing code.', ['investigation' => 'Original report, not the new findings.']);
         $troll = app(TollTroll::class);
         $triage = $troll->evaluate($context, ['investigate' => [Policy::bugReport()]]);
-        $scores = [$guard, $policy];
-        Classifier::fake(function (string $prompt) use (&$scores, $context) {
-            $input = json_decode($prompt, true);
+        Classification::fake(function (ClassificationPrompt $prompt) use ($guard, $policy, $context) {
+            $input = $prompt->state;
             $this->assertSame($context->sources, json_decode($input['sources']['original-report'], true));
             $this->assertStringContainsString('DraftController drops the title.', $input['sources']['investigation']);
+            $answers = [];
+            foreach (array_reverse($prompt->questions, true) as $key => $question) {
+                $score = $question->instructions['policy']['id'] === 'no_prompt_injection' ? $guard : $policy;
+                $answers[$key] = new ChoiceAnswer($score === null ? 'unknown' : ($score === 1.0 ? 'pass' : 'fail'),
+                    ['pass' => $score ?? 0, 'fail' => $score === null ? 0 : 1 - $score, 'unknown' => $score === null ? 1 : 0]);
+            }
 
-            return ['score' => array_shift($scores), 'reason' => 'Second bridge.', 'evidence' => [], 'missing' => []];
-        })->preventStrayPrompts();
+            return $answers;
+        })->preventStrayClassifications();
         $troll->dispatch($triage, ['investigate' => fn ($result) => new InvestigateBug($result)]);
         $this->assertSame($triage->actionKey('investigate'), $investigator->key);
         $this->assertSame($allowed, $fixer->result !== null);
@@ -129,7 +137,8 @@ class ExamplesTest extends TestCase
         $reviewer = (new User)->forceFill(['id' => 7, 'email' => 'reviewer@example.test']);
         $register = require __DIR__.'/../examples/review-notification.php';
         $register($reviewer);
-        Classifier::fake(fn () => ['score' => null, 'reason' => 'Ambiguous.', 'evidence' => [], 'missing' => []]);
+        Classification::fake(fn (ClassificationPrompt $prompt) => array_fill_keys(array_keys($prompt->questions),
+            new ChoiceAnswer('unknown', ['pass' => 0.04, 'fail' => 0.09, 'unknown' => 0.87])))->preventStrayClassifications();
 
         $evaluation = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
         app(TollTroll::class)->dispatch($evaluation, []);

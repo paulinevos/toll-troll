@@ -11,7 +11,7 @@ return [
     // Opt in before sending reviewed snapshots to an inference provider.
     'analysis' => [
         'enabled' => false,
-        // Null inherits the first TollTroll classifier, then Laravel AI defaults.
+        // Null uses Laravel AI text defaults, independently of classification.
         // An explicit provider with a null model uses that provider's default model.
         'provider' => null,
         'model' => null,

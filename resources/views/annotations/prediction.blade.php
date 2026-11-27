@@ -10,11 +10,13 @@
     @endif
     @foreach($prediction['assessments'] as $assessment)
         <div class="sources">
-            <div class="source-heading"><h3>{{ $assessment['sample'] }}</h3><span class="tag {{ $assessment['verdict'] }}">{{ ucfirst($assessment['verdict']) }} · Score {{ $assessment['score'] ?? '—' }}</span></div>
+            <div class="source-heading"><h3>{{ $assessment['sample'] }}</h3><span class="tag {{ $assessment['verdict'] }}">{{ ucfirst($assessment['verdict']) }}</span></div>
             <pre>{{ $assessment['provider'] ?? 'SDK default' }} / {{ $assessment['model'] ?? 'SDK default' }}
-{{ $assessment['reason'] }}@if($assessment['error']){{ "\nError: ".$assessment['error'] }}@endif
-@if($assessment['missing']){{ "\nMissing: ".implode('; ', $assessment['missing']) }}@endif
-@foreach($assessment['evidence'] as $evidence){{ "\n".ucfirst($evidence['kind'] ?? 'source').' '.$evidence['source'].': '.$evidence['quote'] }}@endforeach</pre>
+@if(isset($assessment['choice'])){{ "\nChoice: ".ucfirst($assessment['choice']) }}@endif
+@if(!empty($assessment['probabilities']))@foreach($assessment['probabilities'] as $candidate => $probability){{ "\n".ucfirst($candidate).': '.number_format($probability * 100, 1).'%' }}@endforeach
+@elseif(isset($assessment['score'])){{ "\nLegacy score: ".$assessment['score'] }}@endif
+@if(isset($assessment['confidence'])){{ "\nConfidence: ".number_format($assessment['confidence'] * 100, 1).'%' }}@endif
+@if(!empty($assessment['error'])){{ "\nError: ".$assessment['error'] }}@endif</pre>
         </div>
     @endforeach
     @foreach($prediction['variants'] as $name => $variant)

@@ -13,16 +13,21 @@ class Benchmark
 {
     public function suite(array $suite): array
     {
-        $suite += ['repeats' => 0, 'variants' => 0, 'paraphraser' => ['provider' => null, 'model' => null]];
+        if (! array_key_exists('models', $suite) && config()->has('toll-troll.classifiers')) {
+            throw new InvalidArgumentException('Replace toll-troll.classifiers with one toll-troll.classifier provider/model pair.');
+        }
+        $suite += ['repeats' => 0, 'variants' => 0, 'paraphraser' => ['provider' => null, 'model' => null],
+            'models' => ['classifier_1' => config('toll-troll.classifier')], 'timeout' => config('toll-troll.timeout')];
         Validator::make($suite, [
             'policy' => ['required'],
-            'models' => ['sometimes', 'array', 'min:1'],
+            'config' => ['missing'],
+            'models' => ['required', 'array', 'min:1'],
             'models.*' => ['required', 'array:provider,model'],
             'models.*.provider' => ['present', 'nullable', 'string'],
             'models.*.model' => ['present', 'nullable', 'string'],
             'repeats' => ['required', 'integer', 'min:0'],
             'variants' => ['required', 'integer', 'min:0'],
-            'timeout' => ['sometimes', 'integer', 'min:1'],
+            'timeout' => ['required', 'integer', 'min:1'],
             'paraphraser' => ['required', 'array:provider,model'],
             'paraphraser.provider' => ['present', 'nullable', 'string'],
             'paraphraser.model' => ['present', 'nullable', 'string'],
@@ -38,19 +43,7 @@ class Benchmark
         if (! $suite['policy'] instanceof PolicyContract) {
             throw new InvalidArgumentException('The suite policy must be a Policy object.');
         }
-        if (isset($suite['config']) && ! $suite['config'] instanceof PolicyConfig) {
-            throw new InvalidArgumentException('The suite config must be a PolicyConfig object.');
-        }
-        $settings = PolicyConfig::resolve($suite['policy'], $suite['config'] ?? null, new PolicyConfig(
-            classifiers: isset($suite['models']) ? array_values($suite['models']) : null,
-            timeout: isset($suite['timeout']) ? (int) $suite['timeout'] : null,
-        ));
-        $suite['models'] ??= array_combine(
-            array_map(fn ($index) => 'classifier_'.($index + 1), array_keys($settings['classifiers'])),
-            $settings['classifiers'],
-        );
-        $suite['timeout'] = $settings['timeout'];
-        foreach (['repeats', 'variants'] as $key) {
+        foreach (['repeats', 'variants', 'timeout'] as $key) {
             $suite[$key] = (int) $suite[$key];
         }
         $suite['policy'] = Policy::from($suite['policy']);
@@ -85,6 +78,7 @@ class Benchmark
         }
 
         return [
+            'judgment' => 'choice:pass,fail,unknown',
             'policy' => $policy,
             'models' => $suite['models'], 'paraphraser' => $suite['paraphraser'],
             'repeats' => $suite['repeats'], 'variants' => $suite['variants'], 'timeout' => $suite['timeout'],
@@ -122,7 +116,7 @@ class Benchmark
             }
             foreach ($samples as $i => [$group, $sample]) {
                 if ($sample === null) {
-                    $groups[$group][] = ['score' => null, 'error' => 'rewrite_failed', 'seconds' => 0, 'prompt_calls' => 0];
+                    $groups[$group][] = ['score' => null, 'failProbability' => null, 'error' => 'rewrite_failed', 'seconds' => 0, 'prompt_calls' => 0];
 
                     continue;
                 }
@@ -141,6 +135,7 @@ class Benchmark
     {
         $selected = [];
         $weighted = 0;
+        $weightedFail = 0;
         $weightSum = array_sum($profile['weights']);
         foreach ($profile['weights'] as $group => $weight) {
             if ($weight <= 0) {
@@ -152,17 +147,20 @@ class Benchmark
             array_push($selected, ...$groups[$group]);
             // Weight group means, not individual votes: adding repeats does not increase the group's weight.
             $weighted += array_sum(array_column($groups[$group], 'score')) / count($groups[$group]) * $weight;
+            $weightedFail += array_sum(array_column($groups[$group], 'failProbability')) / count($groups[$group]) * $weight;
         }
         $weighted /= $weightSum;
+        $weightedFail /= $weightSum;
 
         $scores = array_column($selected, 'score');
+        $failProbabilities = array_column($selected, 'failProbability');
         $verdict = match (true) {
-            $profile['aggregation'] === 'veto' && collect($scores)->contains(fn ($s) => $s !== null && $s <= $profile['fail']) => 'fail',
+            $profile['aggregation'] === 'veto' && collect($selected)->contains(fn ($a) => $a['score'] !== null && $a['failProbability'] >= 1 - $profile['fail']) => 'fail',
             collect($selected)->contains(fn ($a) => ! empty($a['error'])) => 'error',
             in_array(null, $scores, true) => 'unknown',
-            $profile['aggregation'] === 'weighted' => $weighted >= $profile['pass'] ? 'pass' : ($weighted <= $profile['fail'] ? 'fail' : 'unknown'),
+            $profile['aggregation'] === 'weighted' => $weighted >= $profile['pass'] ? 'pass' : ($weightedFail >= 1 - $profile['fail'] ? 'fail' : 'unknown'),
             min($scores) >= $profile['pass'] => 'pass',
-            max($scores) <= $profile['fail'] => 'fail',
+            min($failProbabilities) >= 1 - $profile['fail'] => 'fail',
             default => 'unknown',
         };
 

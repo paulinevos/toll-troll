@@ -22,13 +22,13 @@ In an Amp orb, `.agents/setup` installs both Composer projects, creates the demo
 
 - **demo-support:** 52 synthetic reports, including 40 reviewed cases, six deliberate prediction/label disagreements, 12 pending cases, and three ready-to-read advice cards (wording, references, and a controlled classifier comparison).
 - **demo-getting-started:** eight pending reports; not enough evidence for advice.
-- Frozen policy/context/prediction snapshots, classifier scores and reasons, reviewer notes, and initial review history. Review, navigation, revision conflicts, and JSONL export use the real package routes and database.
+- Frozen policy/context/prediction snapshots, classifier judgments and candidate probabilities, reviewer notes, and initial review history. Review, navigation, revision conflicts, and JSONL export use the real package routes and database.
 
 `demo:seed` applies the package migrations and seeds missing records without overwriting existing reviews. To discard **all local demo data**, run `php artisan migrate:fresh` then `php artisan demo:seed`. Keep the same `.env` encryption key while keeping the database; replacing the key makes existing snapshots unreadable.
 
 ## Advice without inference
 
-The demo registers a fixture-backed `AnnotationAdvisor`. It exercises the real eligibility checks, encrypted storage, evidence validation, and dashboard rendering, but the advice text is deterministic: **this does not demonstrate the quality of an AI analysis**. Classifier and paraphraser prompts are also faked with stray-prompt prevention. The demo never needs provider credentials.
+The demo registers a fixture-backed `AnnotationAdvisor`. It exercises the real eligibility checks, encrypted storage, evidence validation, and dashboard rendering, but the advice text is deterministic: **this does not demonstrate the quality of an AI analysis**. SDK classifications and paraphraser prompts are also faked with stray-call prevention. The demo never needs provider credentials.
 
 Saving a review hides old advice because the reviewed input changed. Run `php artisan toll-troll:analyze-annotations demo-support` to regenerate it through the fixture advisor, provided enough disagreements remain. To integrate real inference into your own application, follow [the package's annotation documentation](../docs/annotations.md#annotation-advice), not this demo's deliberately permissive authentication.
 

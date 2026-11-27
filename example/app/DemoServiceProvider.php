@@ -4,9 +4,11 @@ namespace Demo;
 
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Ai\Classification;
+use Laravel\Ai\Prompts\ClassificationPrompt;
+use Laravel\Ai\Responses\Data\ChoiceAnswer;
 use RuntimeException;
 use Vos\TollTroll\Agents\AnnotationAdvisor;
-use Vos\TollTroll\Agents\Classifier;
 use Vos\TollTroll\Agents\Paraphraser;
 
 class DemoServiceProvider extends ServiceProvider
@@ -22,7 +24,9 @@ class DemoServiceProvider extends ServiceProvider
         config()->set('toll-troll-annotations.analysis.model', 'demo-fixture-advisor-v2');
         Gate::define('review-toll-troll-annotations', fn ($user, $dataset) => $user->getAuthIdentifier() === 'demo-reviewer' && str_starts_with($dataset, 'demo-'));
 
-        Classifier::fake()->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => array_map(
+            fn () => new ChoiceAnswer('pass', ['pass' => 0.92, 'fail' => 0.06, 'unknown' => 0.02], confidence: 0.8), $prompt->questions))
+            ->preventStrayClassifications();
         Paraphraser::fake()->preventStrayPrompts();
         AnnotationAdvisor::fake(function (string $prompt) {
             $input = json_decode($prompt, true, flags: JSON_THROW_ON_ERROR);
@@ -43,7 +47,7 @@ class DemoServiceProvider extends ServiceProvider
             ], [
                 'category' => 'classifier',
                 'finding' => 'The fixture classifier repeatedly rejects prose reports despite sufficient reproduction information. This suggests a targeted model comparison, not a proven model defect.',
-                'change' => 'Compare the current classifier with one candidate that supports structured output. Keep policy wording, thresholds, and paraphrases fixed to isolate the model change.',
+                'change' => 'Compare the current classifier with one candidate that supports classification. Keep policy wording, thresholds, and paraphrases fixed to isolate the model change.',
                 'validation' => 'Benchmark both configurations on the held-out ground-truth set. Compare false failures, false passes, unknowns, latency, and inference cost before choosing.',
                 'annotation_ids' => $ids,
             ]]];

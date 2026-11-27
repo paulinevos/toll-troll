@@ -58,7 +58,7 @@ $triage = require base_path('examples/bug-triage.php');
 $evaluation = $triage($context, fn ($result) => new StartFixAgent($result));
 ```
 
-`StartFixAgent` belongs to your application. Its tool permissions, execution isolation, idempotency, and authorization remain application responsibilities. Inspect failed policies' `missing` fields when you need to ask the reporter for more details.
+`StartFixAgent` belongs to your application. Its tool permissions, execution isolation, idempotency, and authorization remain application responsibilities. Use the failed policy's criteria and original context to decide what to ask the reporter; judgments do not include generated missing-information explanations.
 
 ## Review notification
 

@@ -8,10 +8,17 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Laravel\Ai\AiServiceProvider;
+use Laravel\Ai\Classification;
+use Laravel\Ai\Classification\Choice;
+use Laravel\Ai\Prompts\ClassificationPrompt;
+use Laravel\Ai\Responses\ClassificationResponse;
+use Laravel\Ai\Responses\Data\BooleanAnswer;
+use Laravel\Ai\Responses\Data\ChoiceAnswer;
+use Laravel\Ai\Responses\Data\Meta;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
-use Vos\TollTroll\Agents\Classifier;
 use Vos\TollTroll\Agents\Paraphraser;
 use Vos\TollTroll\Bridge;
 use Vos\TollTroll\Context;
@@ -19,8 +26,6 @@ use Vos\TollTroll\Evaluation;
 use Vos\TollTroll\EvaluationConfig;
 use Vos\TollTroll\Events\ReviewRequired;
 use Vos\TollTroll\Policy;
-use Vos\TollTroll\PolicyConfig;
-use Vos\TollTroll\Tests\Fixtures\AttributedPolicy;
 use Vos\TollTroll\Tests\Fixtures\DomainPolicy;
 use Vos\TollTroll\TollTroll;
 use Vos\TollTroll\TollTrollServiceProvider;
@@ -41,7 +46,7 @@ class TollTrollTest extends TestCase
         Queue::fake()->serializeAndRestore();
         Event::fake([ReviewRequired::class]);
         Paraphraser::fake([$this->rewrite(1), $this->rewrite(2), $this->rewrite(3)])->preventStrayPrompts();
-        Classifier::fake(fn () => $this->answer())->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answer(prompt: $prompt))->preventStrayClassifications();
     }
 
     public function test_crossing_a_bridge_uses_its_instructions_guards_and_configuration_and_keeps_its_name_in_jobs(): void
@@ -114,8 +119,9 @@ class TollTrollTest extends TestCase
     #[DataProvider('blockedSamples')]
     public function test_a_single_suspicious_sample_blocks_every_action(string $text): void
     {
-        Classifier::fake(fn (string $prompt) => $this->answer(
-            json_decode($prompt, true)['sources']['report'] === $text ? 'fail' : 'pass',
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answer(
+            $prompt->state['sources']['report'] === $text ? 'fail' : 'pass',
+            $prompt,
         ));
 
         $result = app(TollTroll::class)->evaluate($this->context(), [
@@ -142,13 +148,10 @@ class TollTrollTest extends TestCase
         ];
     }
 
-    public function test_layered_branches_stop_on_missing_information_without_stopping_other_branches(): void
+    public function test_layered_branches_stop_on_failure_without_stopping_other_branches(): void
     {
-        Classifier::fake([
-            ...array_fill(0, 8, $this->answer()), // Guard and bug detection pass.
-            ...array_fill(0, 4, $this->answer('fail', missing: ['Expected behavior'])),
-            ...array_fill(0, 4, $this->answer()), // Independent feature branch passes.
-        ])->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answers($prompt, fn ($key) => $key === 'policy_2' ? $this->answer('fail')['decision'] : $this->answer()['decision']
+        ))->preventStrayClassifications();
 
         $result = app(TollTroll::class)->evaluate($this->context(), [
             'bug' => [Policy::bugReport(), Policy::expectedAndActualBehavior(), Policy::reproductionSteps()],
@@ -160,7 +163,7 @@ class TollTrollTest extends TestCase
         $this->assertFalse($result->needsReview());
         $this->assertSame(Verdict::Skipped, $result->branches['bug'][2]->verdict);
         $this->assertSame([], $result->branches['bug'][2]->assessments);
-        $this->assertSame(['Expected behavior'], $result->branches['bug'][1]->assessments[0]->missing);
+        $this->assertSame('fail', $result->branches['bug'][1]->assessments[0]->choice);
         $this->assertSame(['feature'], app(TollTroll::class)->dispatch($result, [
             'bug' => fn () => throw new RuntimeException('Should not execute.'),
             'feature' => fn ($evaluation) => new RecordDecision($evaluation),
@@ -170,11 +173,8 @@ class TollTrollTest extends TestCase
 
     public function test_original_business_failure_cannot_be_overruled_by_rewrites(): void
     {
-        Classifier::fake([
-            ...array_fill(0, 4, $this->answer()),
-            $this->answer('fail'),
-            ...array_fill(0, 3, $this->answer()),
-        ])->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answers($prompt, fn ($key) => $this->answer($key === 'policy_1' && $prompt->state['sources'] === $this->context()->sources ? 'fail' : 'pass')['decision']
+        ))->preventStrayClassifications();
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
 
@@ -187,10 +187,8 @@ class TollTrollTest extends TestCase
 
     public function test_custom_guards_run_before_business_policies(): void
     {
-        Classifier::fake([
-            ...array_fill(0, 4, $this->answer()),
-            ...array_fill(0, 4, $this->answer('unknown')),
-        ])->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answers($prompt, fn ($key) => $this->answer($key === 'policy_1' ? 'unknown' : 'pass')['decision']
+        ))->preventStrayClassifications();
 
         $result = app(TollTroll::class)->evaluate(
             $this->context(),
@@ -204,32 +202,40 @@ class TollTrollTest extends TestCase
         $this->assertFalse($result->allows('bug'));
     }
 
-    public function test_provider_ensemble_preserves_a_dissenting_classifier(): void
+    public function test_multi_sample_aggregation_preserves_a_dissenting_sample_with_one_classifier(): void
     {
         config()->set('toll-troll.paraphrasers', [
             ['provider' => 'openai', 'model' => 'rewrite-a'],
             ['provider' => 'anthropic', 'model' => 'rewrite-b'],
         ]);
-        config()->set('toll-troll.classifiers', [
-            ['provider' => 'openai', 'model' => 'judge-a'],
-            ['provider' => 'anthropic', 'model' => 'judge-b'],
-        ]);
-        Classifier::fake(fn ($prompt, $attachments, $provider, $model) => $this->answer($model === 'judge-b' ? 'fail' : 'pass'));
+        config()->set('toll-troll.classifier', ['provider' => 'gemini', 'model' => 'judge']);
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answer(
+            str_starts_with($prompt->state['sources']['report'], 'Rewrite 2:') ? 'fail' : 'pass', $prompt,
+        ));
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
 
         $this->assertSame(['rewrite-a', 'rewrite-b', 'rewrite-a'], array_column($result->variants, 'model'));
         $this->assertSame(['openai', 'anthropic', 'openai'], array_column($result->variants, 'provider'));
-        $this->assertCount(8, $result->guards[0]->assessments);
+        $this->assertCount(4, $result->guards[0]->assessments);
         $this->assertSame(Verdict::Fail, $result->guards[0]->verdict);
-        $this->assertSame(['judge-a', 'judge-b'], array_values(array_unique(array_column($result->guards[0]->assessments, 'model'))));
+        $this->assertSame(['judge'], array_values(array_unique(array_column($result->guards[0]->assessments, 'model'))));
+        $this->assertCount(4, $result->classificationCalls);
         $this->assertFalse($result->allows('bug'));
+        Classification::assertClassified(fn (ClassificationPrompt $prompt) => $prompt->provider->name() === 'gemini' && $prompt->model === 'judge');
     }
 
     #[DataProvider('invalidAnswers')]
-    public function test_invalid_classifier_outputs_fail_closed(array $answer): void
+    public function test_invalid_classifier_outputs_fail_closed(ClassificationResponse $answer): void
     {
-        Classifier::fake(fn () => $answer);
+        Classification::fake(function (ClassificationPrompt $prompt) use ($answer) {
+            $answers = $this->answers($prompt, fn () => $answer->answers['decision'] ?? null);
+            if (array_key_exists('reason', $answer->answers)) {
+                $answers['reason'] = $answer->answers['reason'];
+            }
+
+            return new ClassificationResponse($answers, $answer->usage, $answer->meta);
+        })->preventStrayClassifications();
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
 
@@ -241,29 +247,46 @@ class TollTrollTest extends TestCase
 
     public static function invalidAnswers(): array
     {
-        $answer = ['score' => 1, 'reason' => 'Matches.', 'evidence' => [], 'missing' => []];
-
-        return [
-            'nonnumeric score' => [array_replace($answer, ['score' => 'safe'])],
-            'empty score' => [array_replace($answer, ['score' => ''])],
-            'string score' => [array_replace($answer, ['score' => '0.99'])],
-            'score below zero' => [array_replace($answer, ['score' => -0.01])],
-            'score above one' => [array_replace($answer, ['score' => 1.01])],
-            'missing score' => [array_diff_key($answer, ['score' => true])],
-            'missing evidence field' => [array_diff_key($answer, ['evidence' => true])],
-            'invented source' => [array_replace($answer, ['evidence' => [['source' => 'invented', 'quote' => 'HTTP 500']]])],
-            'invented quotation' => [array_replace($answer, ['evidence' => [['source' => 'report', 'quote' => 'HTTP 200']]])],
+        $cases = [
+            'missing decision' => [],
+            'wrong answer type' => ['decision' => new BooleanAnswer(1.0)],
+            'scalar answer' => ['decision' => 'pass'],
+            'unexpected answer' => ['decision' => new ChoiceAnswer('pass', ['pass' => 1.0, 'fail' => 0.0, 'unknown' => 0.0]), 'reason' => new BooleanAnswer(1.0)],
+            'invalid choice' => ['decision' => new ChoiceAnswer('safe', ['pass' => 1.0, 'fail' => 0.0, 'unknown' => 0.0])],
+            'choice contradicts distribution' => ['decision' => new ChoiceAnswer('pass', ['pass' => 0.1, 'fail' => 0.9, 'unknown' => 0.0])],
         ];
+        foreach ([
+            'missing probability' => ['pass' => 1.0, 'fail' => 0.0],
+            'unexpected probability' => ['pass' => 1.0, 'fail' => 0.0, 'unknown' => 0.0, 'other' => 0.0],
+            'nonnumeric probability' => ['pass' => 'safe', 'fail' => 0.0, 'unknown' => 0.0],
+            'string probability' => ['pass' => '1.0', 'fail' => 0.0, 'unknown' => 0.0],
+            'negative probability' => ['pass' => 1.0, 'fail' => -0.1, 'unknown' => 0.1],
+            'probability above one' => ['pass' => 1.1, 'fail' => 0.0, 'unknown' => 0.0],
+            'unnormalized distribution' => ['pass' => 0.8, 'fail' => 0.1, 'unknown' => 0.0],
+            'nonfinite probability' => ['pass' => NAN, 'fail' => 0.0, 'unknown' => 0.0],
+        ] as $name => $probabilities) {
+            $cases[$name] = ['decision' => new ChoiceAnswer('pass', $probabilities)];
+        }
+        foreach (['negative confidence' => -0.1, 'confidence above one' => 1.1, 'nonfinite confidence' => NAN] as $name => $confidence) {
+            $cases[$name] = ['decision' => new ChoiceAnswer('pass', ['pass' => 1.0, 'fail' => 0.0, 'unknown' => 0.0], $confidence)];
+        }
+
+        return array_map(fn ($answers) => [new ClassificationResponse($answers, new TextUsage, new Meta('openai', 'judge'))], $cases);
     }
 
     public function test_classifier_outage_is_an_error_not_a_negative_classification(): void
     {
-        Classifier::fake(fn () => throw new RuntimeException('provider-secret-value'));
+        Classification::fake(fn () => throw new RuntimeException('provider-secret-value'));
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
 
         $this->assertSame(Verdict::Error, $result->guards[0]->verdict);
         $this->assertSame(RuntimeException::class, $result->guards[0]->assessments[0]->error);
+        $this->assertCount(4, $result->classificationCalls);
+        foreach ($result->classificationCalls as $call) {
+            $this->assertSame(RuntimeException::class, $call['error']);
+            $this->assertSame([], $call['usage']);
+        }
         $this->assertStringNotContainsString('provider-secret-value', json_encode($result));
         $this->assertFalse($result->allows('bug'));
     }
@@ -280,6 +303,7 @@ class TollTrollTest extends TestCase
         $this->assertSame(Verdict::Skipped, $result->guards[0]->verdict);
         $this->assertFalse($result->allows('bug'));
         $this->assertTrue($result->needsReview());
+        Classification::assertNothingClassified();
     }
 
     public static function brokenRewrites(): array
@@ -307,17 +331,42 @@ class TollTrollTest extends TestCase
         $this->assertCount(1, $result->errors);
         $this->assertSame('variant_2', $result->errors[0]['stage']);
         $this->assertFalse($result->allows('bug'));
+        $this->assertSame([], $result->classificationCalls);
+        $this->assertSame([], $result->guards[0]->assessments);
+        $this->assertSame([], $result->branches['bug'][0]->assessments);
+        Classification::assertNothingClassified();
     }
 
-    public function test_valid_evidence_is_retained_with_its_sample(): void
+    public function test_observable_judgment_is_retained_with_its_sample_without_generated_explanations(): void
     {
-        Classifier::fake(fn () => $this->answer(evidence: [['source' => 'log', 'quote' => 'SQLSTATE[23000]']]));
+        $probabilities = ['pass' => 0.9, 'fail' => 0.07, 'unknown' => 0.03];
+        $usage = new TextUsage(inputTokens: 42, outputTokens: 1);
+        Classification::fake(fn (ClassificationPrompt $prompt) => new ClassificationResponse(
+            $this->answers($prompt, fn () => new ChoiceAnswer('pass', $probabilities, 0.8)), $usage, new Meta('openai', 'judge'),
+        ));
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
 
         $this->assertTrue($result->allows('bug'));
-        $this->assertSame([['source' => 'log', 'quote' => 'SQLSTATE[23000]']], $result->branches['bug'][0]->assessments[2]->evidence);
-        $this->assertSame('variant_2', $result->branches['bug'][0]->assessments[2]->sample);
+        $assessment = $result->branches['bug'][0]->assessments[2];
+        $this->assertSame('variant_2', $assessment->sample);
+        $this->assertSame('pass', $assessment->choice);
+        $this->assertSame($probabilities, $assessment->probabilities);
+        $this->assertSame(0.8, $assessment->confidence);
+        $this->assertSame(0.9, $assessment->score);
+        $this->assertSame(0.07, $assessment->failProbability);
+        $this->assertSame([], $assessment->usage);
+        $this->assertCount(4, $result->classificationCalls);
+        $this->assertSame(['original', 'variant_1', 'variant_2', 'variant_3'], array_column($result->classificationCalls, 'sample'));
+        foreach ($result->classificationCalls as $call) {
+            $this->assertSame($usage->toArray(), $call['usage']);
+            $this->assertSame('openai', $call['provider']);
+            $this->assertSame('judge', $call['model']);
+            $this->assertArrayNotHasKey('error', $call);
+        }
+        foreach (['reason', 'evidence', 'missing'] as $field) {
+            $this->assertArrayNotHasKey($field, get_object_vars($assessment));
+        }
     }
 
     public function test_unknown_routes_are_rejected_before_any_job_is_queued(): void
@@ -345,18 +394,26 @@ class TollTrollTest extends TestCase
     }
 
     #[DataProvider('invalidConfiguration')]
-    public function test_empty_ensembles_and_invalid_variant_counts_are_rejected(string $key, mixed $value): void
+    public function test_invalid_classifier_and_variant_configuration_is_rejected(string $key, mixed $value): void
     {
         config()->set('toll-troll.'.$key, $value);
 
         $this->expectException(ValidationException::class);
-        app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
+        try {
+            app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
+        } finally {
+            Paraphraser::assertNeverPrompted();
+            Classification::assertNothingClassified();
+        }
     }
 
     public static function invalidConfiguration(): array
     {
         return [
-            ['variants', -1], ['classifiers', []], ['paraphrasers', []],
+            ['variants', -1], ['classifier', []], ['classifier', [['provider' => null, 'model' => null]]], ['paraphrasers', []],
+            'legacy classifier list' => ['classifiers', [['provider' => 'gemini', 'model' => 'legacy-judge']]],
+            'legacy empty classifier list' => ['classifiers', []],
+            'legacy null classifier list' => ['classifiers', null],
             ['injection_guard', ['pass' => 0.7, 'fail' => 0.7]],
             ['injection_guard', ['pass' => 0.3, 'fail' => 0.7]],
             ['injection_guard.pass', 1.01], ['injection_guard.fail', -0.01],
@@ -369,10 +426,8 @@ class TollTrollTest extends TestCase
     #[DataProvider('thresholdScores')]
     public function test_policy_thresholds_determine_verdicts_and_dispatch(?float $score, Verdict $expected): void
     {
-        Classifier::fake([
-            ...array_fill(0, 4, $this->answer()),
-            ...array_fill(0, 4, array_replace($this->answer(), ['score' => $score])),
-        ])->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answers($prompt, fn ($key) => $key === 'policy_0' ? $this->answer()['decision'] : $this->scoreAnswer($score)['decision']
+        ))->preventStrayClassifications();
         $policy = Policy::bugReport()->withThresholds(pass: 0.86, fail: 0.18);
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [$policy]]);
@@ -402,9 +457,42 @@ class TollTrollTest extends TestCase
         ];
     }
 
+    #[DataProvider('asymmetricJudgments')]
+    public function test_unknown_mass_is_not_failure_and_explicit_unknown_always_abstains(string $choice, array $probabilities, float $pass, float $fail, ?float $score, Verdict $expected): void
+    {
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->answers($prompt, fn () => new ChoiceAnswer($choice, $probabilities)))->preventStrayClassifications();
+        $policy = Policy::bugReport()->withThresholds(pass: $pass, fail: $fail);
+        $troll = app(TollTroll::class);
+        $result = $troll->evaluate($this->context(), ['bug' => [$policy]], config: new EvaluationConfig(variants: 0, injectionGuard: false));
+        $assessment = $result->branches['bug'][0]->assessments[0];
+
+        $this->assertSame($expected, $assessment->verdict);
+        $this->assertSame($score, $assessment->score);
+        $this->assertSame($probabilities['fail'], $assessment->failProbability);
+        $this->assertSame($choice, $assessment->choice);
+        $this->assertSame($probabilities, $assessment->probabilities);
+        $this->assertNull($assessment->confidence);
+        $this->assertSame($expected === Verdict::Unknown, $result->needsReview());
+        $this->assertSame([], $troll->dispatch($result, ['bug' => fn ($evaluation) => new RecordDecision($evaluation)]));
+        Queue::assertNothingPushed();
+    }
+
+    public static function asymmetricJudgments(): array
+    {
+        return [
+            'low pass with substantial unknown is not fail' => ['fail', ['pass' => 0.09, 'fail' => 0.46, 'unknown' => 0.45], 0.86, 0.18, 0.09, Verdict::Unknown],
+            'high unknown with low pass abstains' => ['unknown', ['pass' => 0.05, 'fail' => 0.05, 'unknown' => 0.9], 0.86, 0.18, null, Verdict::Unknown],
+            'explicit unknown despite passing probability' => ['unknown', ['pass' => 0.45, 'fail' => 0.05, 'unknown' => 0.5], 0.4, 0.2, null, Verdict::Unknown],
+            'explicit unknown despite failing probability' => ['unknown', ['pass' => 0.05, 'fail' => 0.45, 'unknown' => 0.5], 0.8, 0.6, null, Verdict::Unknown],
+            'below fail cutoff with unknown mass' => ['fail', ['pass' => 0.08, 'fail' => 0.8199, 'unknown' => 0.1001], 0.86, 0.18, 0.08, Verdict::Unknown],
+            'at fail cutoff with unknown mass' => ['fail', ['pass' => 0.08, 'fail' => 1 - 0.18, 'unknown' => 0.1], 0.86, 0.18, 0.08, Verdict::Fail],
+            'above fail cutoff with unknown mass' => ['fail', ['pass' => 0.08, 'fail' => 0.8201, 'unknown' => 0.0999], 0.86, 0.18, 0.08, Verdict::Fail],
+        ];
+    }
+
     public function test_policies_can_apply_different_thresholds_to_the_same_score(): void
     {
-        Classifier::fake(fn () => array_replace($this->answer(), ['score' => 0.87]));
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->scoreAnswer(0.87, $prompt));
         $base = Policy::bugReport();
         $result = app(TollTroll::class)->evaluate($this->context(), [
             'triage' => [$base->withThresholds(pass: 0.85, fail: 0.15)],
@@ -422,9 +510,10 @@ class TollTrollTest extends TestCase
     public function test_configured_injection_thresholds_preserve_single_variant_veto(?float $score, Verdict $expected): void
     {
         config()->set('toll-troll.injection_guard', ['pass' => 0.98, 'fail' => 0.15]);
-        Classifier::fake(fn (string $prompt) => array_replace($this->answer(), [
-            'score' => str_starts_with(json_decode($prompt, true)['sources']['report'], 'Rewrite 2:') ? $score : 1,
-        ]));
+        Classification::fake(fn (ClassificationPrompt $prompt) => $this->scoreAnswer(
+            str_starts_with($prompt->state['sources']['report'], 'Rewrite 2:') ? $score : 1.0,
+            $prompt,
+        ));
 
         $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport()]]);
 
@@ -465,26 +554,53 @@ class TollTrollTest extends TestCase
         app(TollTroll::class)->evaluate($this->context(), ['bug' => []]);
     }
 
-    #[DataProvider('referenceEvidence')]
-    public function test_reference_evidence_cannot_be_misattributed_to_a_source(array $evidence, Verdict $expected): void
+    public function test_classification_keeps_sources_and_references_separate_from_structured_instructions(): void
     {
-        Classifier::fake(fn () => $this->answer(evidence: [$evidence]));
+        $context = $this->context();
         $policy = new Policy('documented_behavior', 'Compare against documentation.', references: ['report' => 'Saving a draft returns HTTP 201.']);
-        $assessment = app(TollTroll::class)->assess($this->context(), $policy);
-        $this->assertSame($expected, $assessment->verdict);
-        $this->assertSame($expected === Verdict::Pass ? [$evidence] : [], $assessment->evidence);
+        $assessment = app(TollTroll::class)->assess($context, $policy);
+        $this->assertSame(Verdict::Pass, $assessment->verdict);
+        Classification::assertClassified(function (ClassificationPrompt $prompt) use ($context, $policy) {
+            $this->assertSame(['sources' => $context->sources, 'references' => $policy->references], $prompt->state);
+            $this->assertSame(['decision'], array_keys($prompt->questions));
+            $question = $prompt->questions['decision'];
+            $this->assertInstanceOf(Choice::class, $question);
+            $this->assertIsArray($question->instructions);
+            $this->assertSame($context->instructions, $question->instructions['target_instructions']);
+            $this->assertSame(['id' => $policy->id, 'criteria' => $policy->criteria], $question->instructions['policy']);
+            $this->assertSame(['pass', 'fail', 'unknown'], array_keys($question->options));
+            foreach ([...array_values($context->sources), ...array_values($policy->references)] as $text) {
+                $this->assertStringNotContainsString($text, json_encode($question->instructions));
+            }
+
+            return true;
+        });
     }
 
-    public static function referenceEvidence(): array
+    public function test_dependent_classifications_receive_only_the_sample_not_previous_results(): void
     {
-        return [
-            'reference quote' => [['kind' => 'reference', 'source' => 'report', 'quote' => 'HTTP 201'], Verdict::Pass],
-            'reference attributed to source' => [['kind' => 'source', 'source' => 'report', 'quote' => 'HTTP 201'], Verdict::Error],
-            'omitted kind means source' => [['source' => 'report', 'quote' => 'HTTP 201'], Verdict::Error],
-            'source attributed to reference' => [['kind' => 'reference', 'source' => 'report', 'quote' => 'HTTP 500'], Verdict::Error],
-            'invented reference' => [['kind' => 'reference', 'source' => 'other', 'quote' => 'HTTP 201'], Verdict::Error],
-            'invalid kind' => [['kind' => 'trusted', 'source' => 'report', 'quote' => 'HTTP 201'], Verdict::Error],
-        ];
+        $calls = 0;
+        $samples = [$this->context()->sources];
+        foreach ([1, 2, 3] as $variant) {
+            $samples[] = array_column($this->rewrite($variant)['sources'], 'text', 'id');
+        }
+        Classification::fake(function (ClassificationPrompt $prompt) use (&$calls, $samples) {
+            $this->assertSame(['sources'], array_keys($prompt->state));
+            $this->assertContains($prompt->state['sources'], $samples);
+            $this->assertSame(['policy_0', 'policy_1', 'policy_2'], array_keys($prompt->questions));
+            foreach ($prompt->questions as $question) {
+                $this->assertSame(['id', 'criteria'], array_keys($question->instructions['policy']));
+            }
+            $this->assertSame([], $prompt->attachments);
+            $calls++;
+
+            return $this->answer(prompt: $prompt);
+        })->preventStrayClassifications();
+
+        $result = app(TollTroll::class)->evaluate($this->context(), ['bug' => [Policy::bugReport(), Policy::reproductionSteps()]]);
+
+        $this->assertTrue($result->allows('bug'));
+        $this->assertSame(4, $calls);
     }
 
     public function test_injection_screening_includes_references_from_all_branches_and_custom_guards(): void
@@ -545,15 +661,15 @@ class TollTrollTest extends TestCase
         config()->set('toll-troll.variants', 0);
         $policy = new DomainPolicy;
         $original = Policy::from($policy);
-        Classifier::fake(function (string $prompt) use ($policy) {
-            $this->assertStringNotContainsString($policy->internal, $prompt);
-            $this->assertStringContainsString('Drafts must save.', $prompt);
+        Classification::fake(function (ClassificationPrompt $prompt) use ($policy) {
+            $this->assertStringNotContainsString($policy->internal, json_encode([$prompt->state, $prompt->questions]));
+            $this->assertStringContainsString('Drafts must save.', json_encode($prompt->state));
             // Even changes during guard inference cannot alter this evaluation.
             $policy->pass = 0.99;
             $policy->documents = ['manual' => 'Changed after capture.'];
 
-            return ['score' => 0.9, 'reason' => 'Fixture.', 'evidence' => [], 'missing' => []];
-        })->preventStrayPrompts();
+            return $this->scoreAnswer(0.9, $prompt);
+        })->preventStrayClassifications();
         $troll = app(TollTroll::class);
         $result = $troll->evaluate($this->context(), ['bug' => [$policy]], guards: [new DomainPolicy(name: 'custom_guard')]);
         $this->assertTrue($result->allows('bug'));
@@ -571,7 +687,7 @@ class TollTrollTest extends TestCase
     #[DataProvider('customPolicyScores')]
     public function test_direct_assessment_uses_custom_thresholds(float $score, Verdict $verdict): void
     {
-        Classifier::fake(fn () => ['score' => $score, 'reason' => 'Fixture.', 'evidence' => [], 'missing' => []]);
+        Classification::fake(fn () => $this->scoreAnswer($score));
         $this->assertSame($verdict, app(TollTroll::class)->assess($this->context(), new DomainPolicy)->verdict);
     }
 
@@ -587,7 +703,7 @@ class TollTrollTest extends TestCase
         try {
             app(TollTroll::class)->evaluate($this->context(), ['bug' => [new DomainPolicy(...$arguments)]]);
         } finally {
-            Classifier::assertNeverPrompted();
+            Classification::assertNothingClassified();
             Paraphraser::assertNeverPrompted();
         }
     }
@@ -602,8 +718,14 @@ class TollTrollTest extends TestCase
     {
         config()->set('toll-troll.variants', 0);
         config()->set('toll-troll.injection_guard.enabled', false);
-        Classifier::fake(array_map(fn ($score) => ['score' => $score, 'reason' => 'Fixture.', 'evidence' => [], 'missing' => []],
-            $guardScore === null ? [$branchScore] : [$guardScore, $branchScore]))->preventStrayPrompts();
+        $calls = 0;
+        Classification::fake(function (ClassificationPrompt $prompt) use (&$calls, $guardScore, $branchScore) {
+            $calls++;
+
+            return $this->answers($prompt, fn ($key, $question) => $this->scoreAnswer(
+                $question->instructions['policy']['id'] === 'documented_behavior' ? $guardScore : $branchScore,
+            )['decision']);
+        })->preventStrayClassifications();
         $troll = app(TollTroll::class);
         $result = $troll->evaluate($this->context(), ['bug' => [Policy::bugReport()]],
             guards: $guardScore === null ? [] : [new DomainPolicy]);
@@ -615,7 +737,8 @@ class TollTrollTest extends TestCase
             $this->assertSame(0.7, $result->guards[0]->policy->passThreshold);
         }
         $this->assertSame($allowed ? ['bug'] : [], $troll->dispatch($result, ['bug' => fn ($result) => new RecordDecision($result)]));
-        Classifier::assertPromptedTimes($guardScore !== null && $guardScore >= 0.7 ? 2 : 1);
+        $this->assertSame($guardScore !== null ? 2 : 1, $calls);
+        Classification::assertClassified(fn (ClassificationPrompt $prompt) => $prompt->asks('policy_0'));
     }
 
     public static function withoutAutomaticGuard(): array
@@ -633,65 +756,70 @@ class TollTrollTest extends TestCase
         $this->assertFalse($result->guarded());
         $this->assertFalse($result->allows('bug'));
         $this->assertTrue($result->needsReview());
-        Classifier::assertNeverPrompted();
+        Classification::assertNothingClassified();
     }
 
-    #[DataProvider('classificationOverrides')]
-    public function test_classification_settings_resolve_per_policy_without_changing_defaults(?PolicyConfig $run, ?PolicyConfig $policy, array $models, int $timeout): void
+    public function test_bridge_classifier_and_timeout_apply_to_every_guard_and_branch_without_changing_defaults(): void
     {
-        config()->set('toll-troll.classifiers', [['provider' => 'openai', 'model' => 'default']]);
+        config()->set('toll-troll.classifier', ['provider' => 'openai', 'model' => 'default']);
+        config()->set('toll-troll.timeout', 47);
         $defaults = config('toll-troll');
-        $config = new EvaluationConfig(variants: 0, paraphrasers: [], injectionGuard: false, classification: $run,
-            policies: $policy === null ? [] : ['documented_behavior' => $policy]);
+        $config = new EvaluationConfig(variants: 0, classifier: ['provider' => 'gemini', 'model' => 'bridge-judge'], classificationTimeout: 31);
         $troll = app(TollTroll::class);
-        $result = $troll->evaluate($this->context(), ['custom' => [new AttributedPolicy], 'built-in' => [Policy::bugReport()]], config: $config);
+        $prompts = [];
+        Classification::fake(function (ClassificationPrompt $prompt) use (&$prompts) {
+            $prompts[] = $prompt;
+
+            return $this->answer(prompt: $prompt);
+        })->preventStrayClassifications();
+        $bridge = new Bridge('shared-configuration', $this->context()->instructions,
+            ['custom' => [new DomainPolicy], 'built-in' => [Policy::bugReport()]], guards: [new Policy('scope', 'Check scope.')], config: $config);
+        $result = $troll->cross($bridge, $this->context()->sources);
         $this->assertTrue($result->allows('custom'));
-        $this->assertSame([], $result->guards);
+        $this->assertTrue($result->allows('built-in'));
+        $this->assertCount(2, $result->guards);
         $this->assertSame([], $result->variants);
-        $this->assertSame($models, array_column($result->branches['custom'][0]->assessments, 'model'));
-        $this->assertSame($run?->classifiers === null ? ['default'] : ['run'], array_column($result->branches['built-in'][0]->assessments, 'model'));
-        Classifier::assertPrompted(fn ($prompt) => $prompt->agent->policy->id === 'documented_behavior' && $prompt->timeout === $timeout);
+        foreach ([...$result->guards, ...$result->branches['custom'], ...$result->branches['built-in']] as $policy) {
+            $this->assertSame(['bridge-judge'], array_column($policy->assessments, 'model'));
+            $this->assertSame(['gemini'], array_column($policy->assessments, 'provider'));
+        }
+        foreach ($prompts as $prompt) {
+            $this->assertSame(31, $prompt->timeout);
+            $this->assertSame('gemini', $prompt->provider->name());
+            $this->assertSame('bridge-judge', $prompt->model);
+        }
         $this->assertSame($defaults, config('toll-troll'));
-        $next = $troll->evaluate($this->context(), ['custom' => [new AttributedPolicy]]);
+        $prompts = [];
+        $next = $troll->evaluate($this->context(), ['custom' => [new DomainPolicy]]);
         $this->assertCount(1, $next->guards);
         $this->assertCount(3, $next->variants);
-        $this->assertCount(8, $next->branches['custom'][0]->assessments);
-    }
-
-    public static function classificationOverrides(): array
-    {
-        $run = new PolicyConfig(classifiers: [['provider' => 'openai', 'model' => 'run']], timeout: 29);
-
-        return [
-            'attribute' => [null, null, ['attribute-a', 'attribute-b'], 17],
-            'run replaces attribute ensemble' => [$run, null, ['run'], 29],
-            'policy timeout inherits run models' => [$run, new PolicyConfig(timeout: 11), ['run'], 11],
-            'policy models inherit attribute timeout' => [null, new PolicyConfig(classifiers: [['provider' => 'openai', 'model' => 'policy']]), ['policy'], 17],
-            'policy models override run models' => [$run, new PolicyConfig(classifiers: [['provider' => 'openai', 'model' => 'policy']]), ['policy'], 29],
-        ];
+        $this->assertSame(array_fill(0, 4, 'default'), array_column($next->branches['custom'][0]->assessments, 'model'));
+        foreach ($prompts as $prompt) {
+            $this->assertSame(47, $prompt->timeout);
+        }
     }
 
     public function test_null_engine_fields_select_sdk_defaults_and_rewrites_keep_separate_settings(): void
     {
         $troll = app(TollTroll::class);
         $sdk = $troll->assess($this->context(), Policy::bugReport());
-        $result = $troll->evaluate($this->context(), ['custom' => [new AttributedPolicy]], config: new EvaluationConfig(
+        config()->set('toll-troll.classifier', ['provider' => 'gemini', 'model' => 'global-judge']);
+        $result = $troll->evaluate($this->context(), ['custom' => [new DomainPolicy]], config: new EvaluationConfig(
             variants: 1, paraphrasers: [['provider' => 'openai', 'model' => 'rewrite-only']], paraphraseTimeout: 9,
-            classification: new PolicyConfig(classifiers: [['provider' => null, 'model' => null]], timeout: 31),
+            classifier: ['provider' => null, 'model' => null], classificationTimeout: 31,
             injectionPassThreshold: 0.93,
-            policies: ['no_prompt_injection' => new PolicyConfig(classifiers: [['provider' => 'openai', 'model' => 'guard-only']], timeout: 7)],
         ));
         $this->assertTrue($result->allows('custom'));
         $this->assertSame(0.93, $result->guards[0]->policy->passThreshold);
         $this->assertSame(0.2, $result->guards[0]->policy->failThreshold);
-        $this->assertSame(['guard-only', 'guard-only'], array_column($result->guards[0]->assessments, 'model'));
+        $this->assertSame([$sdk->model, $sdk->model], array_column($result->guards[0]->assessments, 'model'));
         $this->assertSame('rewrite-only', $result->variants['variant_1']['model']);
         foreach ($result->branches['custom'][0]->assessments as $assessment) {
             $this->assertSame([$sdk->provider, $sdk->model], [$assessment->provider, $assessment->model]);
         }
         Paraphraser::assertPrompted(fn ($prompt) => $prompt->timeout === 9);
-        Classifier::assertPrompted(fn ($prompt) => $prompt->agent->policy->id === 'no_prompt_injection' && $prompt->timeout === 7);
-        Classifier::assertPrompted(fn ($prompt) => $prompt->agent->policy->id === 'documented_behavior' && $prompt->timeout === 31);
+        Classification::assertClassified(fn (ClassificationPrompt $prompt) => $prompt->asks('policy_0') && $prompt->timeout === 31);
+        Classification::assertClassified(fn (ClassificationPrompt $prompt) => $prompt->asks('policy_1') && $prompt->timeout === 31);
     }
 
     #[DataProvider('invalidOverrides')]
@@ -699,22 +827,22 @@ class TollTrollTest extends TestCase
     {
         $this->expectException($exception);
         try {
-            app(TollTroll::class)->evaluate($this->context(), ['custom' => [new AttributedPolicy]], config: $config);
+            app(TollTroll::class)->evaluate($this->context(), ['custom' => [new DomainPolicy]], config: $config);
         } finally {
             Paraphraser::assertNeverPrompted();
-            Classifier::assertNeverPrompted();
+            Classification::assertNothingClassified();
         }
     }
 
     public static function invalidOverrides(): array
     {
         return [
-            [new EvaluationConfig(classification: new PolicyConfig(classifiers: [])), ValidationException::class],
-            [new EvaluationConfig(classification: new PolicyConfig(timeout: 0)), ValidationException::class],
+            [new EvaluationConfig(classifier: []), ValidationException::class],
+            [new EvaluationConfig(classifier: ['provider' => null]), ValidationException::class],
+            [new EvaluationConfig(classificationTimeout: 0), ValidationException::class],
             [new EvaluationConfig(variants: 1, paraphrasers: []), ValidationException::class],
             [new EvaluationConfig(variants: -1), ValidationException::class],
             [new EvaluationConfig(injectionPassThreshold: 0.1), ValidationException::class],
-            [new EvaluationConfig(policies: ['typo' => new PolicyConfig(timeout: 9)]), InvalidArgumentException::class],
         ];
     }
 
@@ -734,15 +862,32 @@ class TollTrollTest extends TestCase
         return ['sources' => collect($sources)->map(fn ($text, $id) => ['id' => $id, 'text' => $text])->values()->all()];
     }
 
-    private function answer(string $verdict = 'pass', array $evidence = [], array $missing = []): array
+    private function answer(string $verdict = 'pass', ?ClassificationPrompt $prompt = null): array
     {
-        $score = match ($verdict) {
-            'pass' => 1,
-            'fail' => 0,
-            'unknown' => null,
-        };
+        $probabilities = array_fill_keys(['pass', 'fail', 'unknown'], 0.0);
+        $probabilities[$verdict] = 1.0;
 
-        return ['score' => $score, 'reason' => 'Fixture decision.', 'evidence' => $evidence, 'missing' => $missing];
+        $answer = new ChoiceAnswer($verdict, $probabilities, 1.0);
+
+        return $prompt === null ? ['decision' => $answer] : $this->answers($prompt, fn () => $answer);
+    }
+
+    private function scoreAnswer(?float $score, ?ClassificationPrompt $prompt = null): array
+    {
+        $answer = $score === null ? $this->answer('unknown')['decision'] :
+            new ChoiceAnswer($score >= 0.5 ? 'pass' : 'fail', ['pass' => $score, 'fail' => 1 - $score, 'unknown' => 0.0]);
+
+        return $prompt === null ? ['decision' => $answer] : $this->answers($prompt, fn () => $answer);
+    }
+
+    private function answers(ClassificationPrompt $prompt, callable $answer): array
+    {
+        $answers = [];
+        foreach (array_reverse($prompt->questions, true) as $key => $question) {
+            $answers[$key] = $answer($key, $question);
+        }
+
+        return $answers;
     }
 }
 

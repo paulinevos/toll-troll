@@ -15,6 +15,8 @@ class DemoSeeder extends Seeder
 {
     public function run(): void
     {
+        $policy = Policy::reproductionSteps();
+        $policyHash = hash('sha256', json_encode(Annotation::policySnapshot($policy), JSON_THROW_ON_ERROR));
         foreach (['demo-support' => 52, 'demo-getting-started' => 8] as $dataset => $count) {
             for ($i = 0; $i < $count; $i++) {
                 $key = sprintf('DEMO-%03d', $i + 1);
@@ -26,8 +28,8 @@ class DemoSeeder extends Seeder
                     default => 'Could you add autosave? I have not seen a crash, but I would like my drafts saved automatically.',
                 };
                 $context = new Context('Triage incoming support reports. Propose fixes, but never deploy or change customer data.', ['ticket' => $report."\nSynthetic ticket: ".$key]);
-                Event::dispatch(new AnnotationRequested($dataset, $key, $context, Policy::reproductionSteps()));
-                $case = Annotation::where('dataset', $dataset)->where('sample_key', $key)->sole();
+                Event::dispatch(new AnnotationRequested($dataset, $key, $context, $policy));
+                $case = Annotation::where('dataset', $dataset)->where('sample_key', $key)->where('policy_hash', $policyHash)->sole();
                 if ($case->prediction !== null) {
                     continue; // Reseeding preserves reviews, notes, and their audit history.
                 }
@@ -37,10 +39,10 @@ class DemoSeeder extends Seeder
                 $reviewed = $dataset === 'demo-support' && $i < 40;
                 $case->fill([
                     'prediction' => ['evaluation_id' => 'synthetic-'.$dataset.'-'.$key, 'branch' => 'bug-triage', 'verdict' => $predicted,
-                        'assessments' => [['sample' => 'original', 'verdict' => $predicted, 'score' => $predicted === 'pass' ? 0.92 : 0.15,
-                            'reason' => $corrected ? 'Reproduction steps are not presented as an explicit list.' : ($predicted === 'pass' ? 'Steps, environment, expected and actual behavior are supplied.' : 'Necessary reproduction details are missing.'),
-                            'provider' => 'demo', 'model' => 'fixture-only', 'error' => null,
-                            'missing' => $predicted === 'pass' ? [] : ['Reproduction steps'], 'evidence' => []]],
+                        'assessments' => [['sample' => 'original', 'verdict' => $predicted, 'score' => $predicted === 'pass' ? 0.92 : 0.06,
+                            'failProbability' => $predicted === 'pass' ? 0.06 : 0.92, 'choice' => $predicted,
+                            'probabilities' => ['pass' => $predicted === 'pass' ? 0.92 : 0.06, 'fail' => $predicted === 'pass' ? 0.06 : 0.92, 'unknown' => 0.02],
+                            'confidence' => 0.8, 'provider' => 'demo', 'model' => 'fixture-only', 'error' => null]],
                         'variants' => [], 'errors' => []],
                     'label' => $reviewed ? $expected : null, 'version' => $reviewed ? 1 : 0,
                     'reviewer_id' => $reviewed ? 'demo-reviewer' : null, 'reviewed_at' => $reviewed ? now() : null,

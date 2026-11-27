@@ -11,6 +11,7 @@ final readonly class Evaluation
      * @param  list<PolicyResult>  $guards
      * @param  array<string, list<PolicyResult>>  $branches
      * @param  list<array{stage: string, error: string}>  $errors
+     * @param  list<array{sample: string, provider: ?string, model: ?string, usage: array, error?: string}>  $classificationCalls  Request-level usage, including speculative judgments.
      */
     public function __construct(
         public string $id,
@@ -20,6 +21,7 @@ final readonly class Evaluation
         public array $branches,
         public array $errors = [],
         public ?string $bridge = null,
+        public array $classificationCalls = [],
     ) {}
 
     public function guarded(): bool

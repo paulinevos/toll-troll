@@ -69,7 +69,7 @@ return [
 ];
 ```
 
-This is an original-only, isolated-policy comparison. Each configured classifier is measured separately, not as a combined production ensemble. Explicitly set `models` if you need to reproduce a historical classifier configuration; the export does not configure providers from its old predictions. To test repeated judgments or paraphrases, change `repeats`, `variants`, and profile weights deliberately, using the settings below. Keep everything except the proposed change fixed.
+This is an original-only, isolated-policy comparison. Each configured classifier is measured separately; production uses one classifier per bridge. Explicitly set `models` if you need to reproduce a historical or bridge-specific classifier configuration; the export does not configure providers from its old predictions. To test repeated judgments or paraphrases, change `repeats`, `variants`, and profile weights deliberately, using the settings below. Keep everything except the proposed change fixed.
 
 ### 3. Preview, then run
 
@@ -105,24 +105,23 @@ Copy [the example suite](../examples/benchmark.php) into your Laravel applicatio
 
 The suite's `policy` accepts the built-in value object or an application implementation of [`Contracts\Policy`](../README.md#custom-policies). The command freezes its resolved contract values when loading the suite, so all records use the same policy and references; extra implementation fields never enter reports or prompts.
 
-To override a policy's `#[PolicyConfig]` defaults, pass the same typed config used by evaluations:
+Use a named model matrix to compare native decision classifiers; this is a benchmark experiment, not a production ensemble:
 
 ```php
-use Vos\TollTroll\PolicyConfig;
-
 return [
     'policy' => $yourPolicy,
-    'config' => new PolicyConfig(
-        classifiers: [['provider' => 'my-provider', 'model' => 'comparison-model']],
-        timeout: 30,
-    ),
+    'models' => [
+        'current' => ['provider' => 'typesafe', 'model' => null],
+        'candidate' => ['provider' => 'openai', 'model' => null],
+    ],
+    'timeout' => 30,
     'profiles' => [
         'original' => ['aggregation' => 'unanimous', 'weights' => ['original' => 1], 'pass' => 0.8, 'fail' => 0.2],
     ],
 ];
 ```
 
-Classification uses the same resolver as evaluation: explicit suite `models`/`timeout` → suite `config` → policy attribute → config-file defaults. An explicit named `models` matrix replaces the configured classifiers; without it, resolved classifiers become separately measured models named `classifier_1`, `classifier_2`, etc., not a combined ensemble. Null provider/model entries explicitly select SDK defaults. The resolved model list and timeout are stored in the capture, so replay rejects changes to them. Benchmark `variants`, `repeats`, and `paraphraser` remain experiment settings, not policy attributes; `timeout` applies to both classification and rewrites in this command.
+Without `models`, the suite uses `toll-troll.classifier` as one model named `classifier_1`; without `timeout`, it uses `toll-troll.timeout`. Explicit suite values override these defaults. To reproduce a bridge's override, copy its provider/model pair and timeout into the suite. Classifier drivers must be `typesafe`, `openai`, or `gemini`, including named SDK configurations using those drivers. Null provider/model entries explicitly select SDK classification defaults. The resolved model list and timeout are stored in the capture, so replay rejects changes to them. There are no policy inference attributes or suite `config` objects. Benchmark `variants`, `repeats`, and `paraphraser` remain experiment settings; `timeout` applies to both classification and rewrites in this command. Unlike bridge evaluation, each benchmark judges a single isolated policy and collects repeated samples independently.
 
 ```sh
 php artisan toll-troll:benchmark examples/benchmark.php storage/app/private/cases.jsonl --dry-run
@@ -143,21 +142,23 @@ php artisan toll-troll:benchmark examples/benchmark.php --replay=storage/app/pri
 
 Replay makes **zero inference calls**. It requires a complete capture with the same policy wording, resolved references, models, counts, paraphraser, and timeout. A changed model, reference, or sample count requires collection. Output files must not already exist; the command creates them with private permissions. Progress is saved after each complete case; interrupted reports remain marked incomplete and cannot be replayed as finished runs. This version does not automatically resume partial inference.
 
+Current reports use format 2 and judgment-only `pass`/`fail`/`unknown` classification. Old format-1 text-agent reports cannot be replayed with the new probability semantics; collect a new report instead. Existing ground-truth exports can still be used when their policy snapshot matches the suite.
+
 Resolve references once in the trusted suite's `Policy`, as shown in the [domain-reference example](../README.md#-domain-references). All records, models, and repeats use that same text; only report sources are paraphrased. Captures store the resolved text, not paths or retrieval callbacks. Freeze documents locally when comparing runs so changing an upstream document does not silently change the experiment. Use separate suites for different reference snapshots. References, including private code and documents, are sent to each selected classifier and stored in the private report; approve and redact them along with sources.
 
 ## Weights and thresholds
 
-Each profile supplies `aggregation`, `weights`, `pass`, and `fail`. Thresholds satisfy `0 <= fail < pass <= 1`. Scores always measure **policy satisfaction**: high means more likely to pass, including for the no-injection policy.
+Each profile supplies `aggregation`, `weights`, `pass`, and `fail`. Thresholds satisfy `0 <= fail < pass <= 1`. Scores are P(pass), including for the no-injection policy. Failure requires P(fail) ≥ 1 − the fail cutoff, not merely low P(pass): the remaining probability may belong to `unknown`.
 
 Groups are `original` (the first judgment), `repeated` (additional original judgments), and `paraphrased` (judgments of rewrites). Missing or zero-weight groups are excluded from that profile. Positive weights require the group to have been collected.
 
-- **weighted:** calculate the mean score within each selected group, then the weighted mean of those group means. Weights are normalized by their sum. Adding more repeated judgments does not automatically increase that group's influence. For example, original 0.9, repeat scores 0.3/0.5, paraphrase 0.2, with weights 1/1/2, gives approximately 0.425.
-- **unanimous:** all selected scores must reach the pass cutoff to pass; all must reach the fail cutoff to fail; otherwise unknown. Positive weights select groups, but their magnitudes do not change this rule.
-- **veto:** like unanimous, except any selected failing score vetoes. This resembles the production guard reducer; it does not benchmark the complete production pipeline.
+- **weighted:** calculate group means and their weighted mean separately for P(pass) and P(fail). Pass when weighted P(pass) reaches the pass cutoff; fail when weighted P(fail) reaches 1 − the fail cutoff; otherwise unknown. Weights are normalized by their sum. Adding more repeated judgments does not automatically increase that group's influence. For example, original P(pass) 0.9, repeats 0.3/0.5, paraphrase 0.2, with weights 1/1/2, gives weighted P(pass) approximately 0.425.
+- **unanimous:** all selected P(pass) values must reach the pass cutoff to pass; all P(fail) values must reach 1 − the fail cutoff to fail; otherwise unknown. Positive weights select groups, but their magnitudes do not change this rule.
+- **veto:** like unanimous, except any selected definite failure vetoes. This resembles the production guard reducer; it does not benchmark the complete production pipeline.
 
-Any selected inference/validation failure produces `error`, and a null score produces `unknown`; neither is silently dropped or interpreted as a zero. For veto, a definite failure takes precedence over errors, as in the guard reducer. A failed rewrite remains an error placeholder in its selected group. Original-only profiles can still be scored if an unused rewrite failed.
+Any selected inference/validation failure produces `error`, and an explicit unknown choice (null score) produces `unknown`; neither is silently dropped or interpreted as a zero. For veto, a definite failure takes precedence over errors or unknowns, as in the guard reducer. A failed rewrite remains an error placeholder in its selected group. Original-only profiles can still be scored if an unused rewrite failed.
 
-Weighted profiles can average away a genuine violation. They are **offline research only**, never a replacement for the production gate's all-pass/veto rule. Scores and averages are not calibrated probabilities, and independent calls to one model are not independent security guarantees.
+Weighted profiles can average away a genuine violation. They are **offline research only**, never a replacement for the production gate's all-pass/veto rule. Model probabilities and their averages are not calibrated guarantees of correctness, and independent calls to one model are not independent security guarantees.
 
 ## Read the whole report
 

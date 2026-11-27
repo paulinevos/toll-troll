@@ -10,10 +10,12 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Laravel\Ai\AiServiceProvider;
+use Laravel\Ai\Classification;
+use Laravel\Ai\Prompts\ClassificationPrompt;
+use Laravel\Ai\Responses\Data\ChoiceAnswer;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Vos\TollTroll\Agents\AnnotationAdvisor;
-use Vos\TollTroll\Agents\Classifier;
 use Vos\TollTroll\Agents\Paraphraser;
 use Vos\TollTroll\Annotations\Annotation;
 use Vos\TollTroll\Annotations\AnnotationAnalysis;
@@ -93,7 +95,8 @@ class AnnotationsTest extends TestCase
     {
         $bridge = new Bridge('support-webhook', 'Triage.', ['bug' => [Policy::bugReport()]],
             config: new EvaluationConfig(variants: 0, injectionGuard: false));
-        Classifier::fake([['score' => 1, 'reason' => 'Bug.', 'evidence' => [], 'missing' => []]])->preventStrayPrompts();
+        Classification::fake(fn (ClassificationPrompt $prompt) => array_fill_keys(array_keys($prompt->questions),
+            new ChoiceAnswer('pass', ['pass' => 0.94, 'fail' => 0.04, 'unknown' => 0.02])))->preventStrayClassifications();
         $evaluation = app(TollTroll::class)->cross($bridge, ['report' => 'Save fails.']);
         $event = new EvaluationReviewRequested($bridge, 'ticket-42', $evaluation);
         Event::dispatch($event);
@@ -201,11 +204,21 @@ class AnnotationsTest extends TestCase
         Event::fake([ReviewRequired::class]);
         config()->set('toll-troll.variants', 1);
         Paraphraser::fake([['sources' => [['id' => 'report', 'text' => 'Rewritten: Save fails.']]]])->preventStrayPrompts();
-        Classifier::fake(array_map(fn ($score) => ['score' => $score, 'reason' => '<script>prediction-marker</script>',
-            'evidence' => [['source' => 'report', 'quote' => 'Save fails.']], 'missing' => ['Environment']],
-            [1, 1, 0, 0, 1, 1, null, null, 2, 2]))->preventStrayPrompts();
+        Classification::fake(function (ClassificationPrompt $prompt) {
+            $scores = ['policy_0' => 1, 'policy_1' => 0, 'policy_2' => 1, 'policy_3' => 1, 'policy_4' => null, 'policy_5' => 2];
+            $answers = [];
+            foreach (array_reverse(array_keys($prompt->questions)) as $key) {
+                $score = $scores[$key];
+                $answers[$key] = new ChoiceAnswer(
+                    $score === null ? 'unknown' : ($score === 0 ? 'fail' : 'pass'),
+                    ['pass' => $score ?? 0, 'fail' => $score === null ? 0 : 1 - $score, 'unknown' => $score === null ? 1 : 0],
+                );
+            }
+
+            return $answers;
+        })->preventStrayClassifications();
         $patrol = require __DIR__.'/../examples/troll-patrol.php';
-        $evaluation = $patrol('patrol', 'ticket-1', new Context('Triage.', ['report' => 'Save fails.']), [
+        $evaluation = $patrol('patrol', 'ticket-1', new Context('Triage.', ['report' => 'Save fails. <script>context-marker</script>']), [
             'bug' => [Policy::bugReport(), Policy::expectedAndActualBehavior()],
             'other' => [Policy::bugReport()], // Same policy, different branch/prediction.
             'maybe' => [Policy::featureRequest()],
@@ -216,7 +229,7 @@ class AnnotationsTest extends TestCase
         $this->assertEqualsCanonicalizing(['pass', 'fail', 'skipped', 'pass', 'unknown', 'error'], $cases->map(fn ($case) => $case->prediction['verdict'])->all());
         $this->assertSame(6, $cases->whereNull('label')->count());
         foreach (DB::table('toll_troll_annotations')->pluck('prediction') as $encrypted) {
-            $this->assertStringNotContainsString('prediction-marker', $encrypted);
+            $this->assertStringNotContainsString('context-marker', $encrypted);
             $this->assertStringNotContainsString($evaluation->id, $encrypted);
         }
 
@@ -229,7 +242,7 @@ class AnnotationsTest extends TestCase
             $this->assertSame(0, preg_match('/type="radio"[^>]*\schecked/', $page->getContent()));
             $this->assertSame($evaluation->variants['variant_1']['sources'], $prediction['variants']['variant_1']['sources']);
             if (! in_array($prediction['verdict'], ['error', 'skipped'])) {
-                $page->assertSee('&lt;script&gt;prediction-marker&lt;/script&gt;', false)->assertDontSee('<script>prediction-marker</script>', false);
+                $page->assertSee('&lt;script&gt;context-marker&lt;/script&gt;', false)->assertDontSee('<script>context-marker</script>', false);
                 $this->assertCount(2, $prediction['assessments']);
                 $this->assertSame(['original', 'variant_1'], array_column($prediction['assessments'], 'sample'));
                 $this->post($url, ['label' => $prediction['verdict'], 'version' => 0])->assertRedirect();
@@ -266,6 +279,23 @@ class AnnotationsTest extends TestCase
         Event::assertNotDispatched(ReviewRequired::class);
         Queue::assertNothingPushed();
         Http::assertNothingSent();
+    }
+
+    public function test_historical_generated_explanations_are_not_rendered(): void
+    {
+        Event::dispatch(new AnnotationRequested('support', 'legacy', new Context('Triage.', ['report' => 'Save fails.']), Policy::bugReport()));
+        $case = Annotation::sole();
+        $case->update(['prediction' => [
+            'evaluation_id' => 'legacy-run', 'branch' => 'bug', 'verdict' => 'pass', 'variants' => [], 'errors' => [],
+            'assessments' => [['sample' => 'original', 'verdict' => 'pass', 'score' => 0.9,
+                'reason' => '<script>legacy-reason</script>', 'evidence' => [['source' => 'report', 'quote' => 'legacy-evidence']],
+                'missing' => ['legacy-missing']]],
+        ]]);
+        $this->actingAs(new GenericUser(['id' => 7]));
+        Gate::define('review-toll-troll-annotations', fn () => true);
+
+        $this->get('/toll-troll/annotations/support/'.$case->id)->assertOk()
+            ->assertSee('legacy-run')->assertDontSee('legacy-reason')->assertDontSee('legacy-evidence')->assertDontSee('legacy-missing');
     }
 
     #[DataProvider('annotationStatuses')]
@@ -319,7 +349,7 @@ class AnnotationsTest extends TestCase
     {
         config()->set('toll-troll.variants', 1);
         Paraphraser::fake(fn () => throw new \RuntimeException('secret provider detail'))->preventStrayPrompts();
-        Classifier::fake()->preventStrayPrompts();
+        Classification::fake()->preventStrayClassifications();
         $evaluation = app(TollTroll::class)->evaluate(new Context('Triage.', ['report' => 'Save fails.']), ['bug' => [Policy::bugReport()]]);
         $event = new EvaluationReviewRequested('patrol', 'ticket-2', $evaluation);
         Event::dispatch($event);
@@ -329,7 +359,7 @@ class AnnotationsTest extends TestCase
             $this->assertSame([], $case->prediction['assessments']);
             $this->assertSame([['stage' => 'variant_1', 'error' => \RuntimeException::class]], $case->prediction['errors']);
         }
-        Classifier::assertNeverPrompted();
+        Classification::assertNothingClassified();
         Annotation::query()->delete();
         $count = 0;
         Annotation::creating(function () use (&$count) {
@@ -501,7 +531,9 @@ class AnnotationsTest extends TestCase
         $this->assertSame(0, AnnotationAnalysis::count());
 
         config()->set('toll-troll-annotations.analysis.enabled', true);
-        config()->set('toll-troll.classifiers', [['provider' => 'anthropic', 'model' => 'classifier-model']]);
+        config()->set('toll-troll.classifier', ['provider' => 'typesafe', 'model' => 'classifier-model']);
+        config()->set('ai.default', 'anthropic');
+        config()->set('ai.providers.anthropic.models.text.default', 'advisor-default');
         $this->artisan('toll-troll:analyze-annotations', ['dataset' => 'support'])->assertSuccessful();
         $analysis = AnnotationAnalysis::sole();
         $this->assertSame(30, $analysis->reviewed_count);
@@ -511,7 +543,7 @@ class AnnotationsTest extends TestCase
         AnnotationAdvisor::assertPrompted(function ($prompt) use ($cases) {
             $data = json_decode($prompt->prompt, true);
 
-            return $prompt->provider->name() === 'anthropic' && $prompt->model === 'classifier-model'
+            return $prompt->provider->name() === 'anthropic' && $prompt->model === 'advisor-default'
                 && count($data['cases']) === 30 && $data['policy'] === $cases->first()->policy;
         });
         $base = '/toll-troll/annotations';
